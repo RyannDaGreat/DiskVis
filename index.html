@@ -225,7 +225,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             panX: 0,
             panY: 0,
             minZoom: 1,
-            maxZoom: 20,
+            maxZoom: 100,
 
             /** Reset to default view */
             reset() {
@@ -723,24 +723,26 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         let rootData = null;
         let currentNode = null;
         let renderedRects = [];
+        let canvasCSSWidth = 0;
+        let canvasCSSHeight = 0;
 
         async function renderTreemap(node, onProgress) {
             currentNode = node;
             updateStats();
 
             const container = document.getElementById('container');
-            const cssWidth = container.clientWidth;
-            const cssHeight = container.clientHeight;
+            canvasCSSWidth = container.clientWidth;
+            canvasCSSHeight = container.clientHeight;
             const scale = Format.renderScale();
 
-            canvas.width = cssWidth * scale;
-            canvas.height = cssHeight * scale;
-            canvas.style.width = cssWidth + 'px';
-            canvas.style.height = cssHeight + 'px';
+            canvas.width = canvasCSSWidth * scale;
+            canvas.height = canvasCSSHeight * scale;
+            canvas.style.width = canvasCSSWidth + 'px';
+            canvas.style.height = canvasCSSHeight + 'px';
 
-            // Collect all leaf rects
+            // Collect all leaf rects (in CSS pixel space)
             renderedRects = [];
-            const baseRect = { x: 0, y: 0, width: cssWidth, height: cssHeight };
+            const baseRect = { x: 0, y: 0, width: canvasCSSWidth, height: canvasCSSHeight };
             collectLeafRects(node, baseRect, renderedRects);
 
             if (Config.USE_WEBGL) {
@@ -751,8 +753,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 }
                 // Upload rects to GPU
                 WebGLRenderer.setRects(renderedRects);
-                // Render with viewport transform applied in shader
-                WebGLRenderer.render(Viewport, canvas.width, canvas.height);
+                // Render with viewport transform (use CSS dimensions for coordinate space)
+                WebGLRenderer.render(Viewport, canvasCSSWidth, canvasCSSHeight);
                 return { drawn: renderedRects.length, culled: 0 };
             } else {
                 // Canvas2D path - init context lazily
@@ -1016,10 +1018,11 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             },
 
             /** Render all rects with current viewport */
-            render(viewport, width, height) {
+            render(viewport, cssWidth, cssHeight) {
                 const gl = this.gl;
 
-                gl.viewport(0, 0, width, height);
+                // Viewport uses actual canvas buffer size
+                gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
                 gl.clearColor(0.102, 0.102, 0.180, 1.0);  // #1a1a2e
                 gl.clear(gl.COLOR_BUFFER_BIT);
 
@@ -1028,8 +1031,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 gl.useProgram(this.program);
                 gl.bindVertexArray(this.vao);
 
-                // Set uniforms
-                gl.uniform2f(this.locs.u_resolution, width, height);
+                // Set uniforms (resolution is CSS pixel space where rects are defined)
+                gl.uniform2f(this.locs.u_resolution, cssWidth, cssHeight);
                 gl.uniform1f(this.locs.u_zoom, viewport.zoom);
                 gl.uniform2f(this.locs.u_pan, viewport.panX, viewport.panY);
 
@@ -1230,7 +1233,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         /** Fast render for WebGL - just re-renders with current viewport */
         function renderFast() {
             if (Config.USE_WEBGL && webglInitialized) {
-                WebGLRenderer.render(Viewport, canvas.width, canvas.height);
+                WebGLRenderer.render(Viewport, canvasCSSWidth, canvasCSSHeight);
             }
         }
 
