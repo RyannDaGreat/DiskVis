@@ -224,8 +224,9 @@ MANDATORY STANDARDS - All contributors must follow these rules.
          * ============================================================ */
 
         /**
-         * Viewport - Pure transform functions for pan/zoom.
-         * State is stored here but methods are pure.
+         * Viewport - Pan/zoom state with pure transform methods.
+         * State: zoom, panX, panY, minZoom, maxZoom
+         * Pure methods: screenToWorld, worldToScreen, isRectVisible
          */
         const Viewport = {
             zoom: 1,
@@ -234,11 +235,16 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             minZoom: 1,
             maxZoom: 100,
 
-            /** Reset to default view */
-            reset() {
-                this.zoom = 1;
-                this.panX = 0;
-                this.panY = 0;
+            /** @pure Default viewport state */
+            defaults() {
+                return { zoom: 1, panX: 0, panY: 0 };
+            },
+
+            /** Apply state from object */
+            apply(state) {
+                this.zoom = state.zoom;
+                this.panX = state.panX;
+                this.panY = state.panY;
             },
 
             /**
@@ -376,6 +382,14 @@ MANDATORY STANDARDS - All contributors must follow these rules.
              */
             renderScale() {
                 return Config.RENDER_SCALE * (window.devicePixelRatio || 1);
+            },
+
+            /** Size a canvas for HiDPI: buffer at scale, CSS at 1x */
+            sizeCanvas(canvas, cssW, cssH, scale) {
+                canvas.width = cssW * scale;
+                canvas.height = cssH * scale;
+                canvas.style.width = cssW + 'px';
+                canvas.style.height = cssH + 'px';
             },
 
             /**
@@ -763,9 +777,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             const scale = Format.renderScale();
             const { zoom, panX, panY } = Viewport;
 
-            // Clear overlay
             textCtx.clearRect(0, 0, textCanvas.width, textCanvas.height);
-
             if (!currentNode) return;
 
             // Collect visible labels using tree traversal with pruning
@@ -777,19 +789,22 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 Config.LABEL_MIN_WIDTH, Config.LABEL_MIN_HEIGHT
             );
 
+            // Pre-compute scaled padding
+            const padX = Config.LABEL_PADDING_X * scale;
+            const padY = Config.LABEL_PADDING_Y * scale;
+
             // Set up text style once
             textCtx.fillStyle = 'rgba(255,255,255,0.9)';
             textCtx.font = `${11 * scale}px -apple-system, BlinkMacSystemFont, sans-serif`;
             textCtx.shadowColor = 'rgba(0,0,0,0.8)';
             textCtx.shadowBlur = 2 * scale;
             textCtx.shadowOffsetX = 0;
-            textCtx.shadowOffsetY = 1 * scale;
+            textCtx.shadowOffsetY = scale;
 
-            for (const { node, sx, sy, sw, sh } of labels) {
-                const maxWidth = sw * scale - Config.LABEL_PADDING_X * 2 * scale;
-                const measureFn = t => textCtx.measureText(t).width;
-                const displayText = Format.middleTruncate(node.name, measureFn, maxWidth);
-                textCtx.fillText(displayText, sx * scale + Config.LABEL_PADDING_X * scale, sy * scale + Config.LABEL_PADDING_Y * scale);
+            const measureFn = t => textCtx.measureText(t).width;
+            for (const { node, sx, sy, sw } of labels) {
+                const displayText = Format.middleTruncate(node.name, measureFn, sw * scale - padX * 2);
+                textCtx.fillText(displayText, sx * scale + padX, sy * scale + padY);
             }
 
             textCtx.shadowBlur = 0;
@@ -804,16 +819,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             canvasCSSHeight = container.clientHeight;
             const scale = Format.renderScale();
 
-            canvas.width = canvasCSSWidth * scale;
-            canvas.height = canvasCSSHeight * scale;
-            canvas.style.width = canvasCSSWidth + 'px';
-            canvas.style.height = canvasCSSHeight + 'px';
-
-            // Size text overlay to match
-            textCanvas.width = canvasCSSWidth * scale;
-            textCanvas.height = canvasCSSHeight * scale;
-            textCanvas.style.width = canvasCSSWidth + 'px';
-            textCanvas.style.height = canvasCSSHeight + 'px';
+            Format.sizeCanvas(canvas, canvasCSSWidth, canvasCSSHeight, scale);
+            Format.sizeCanvas(textCanvas, canvasCSSWidth, canvasCSSHeight, scale);
 
             // Collect all leaf rects (in CSS pixel space)
             renderedRects = [];
@@ -1084,14 +1091,15 @@ MANDATORY STANDARDS - All contributors must follow these rules.
              * @pure Create initial touch state for pinch gesture.
              */
             createPinchState(t1, t2, rect, viewport) {
+                const mid = this.midpoint(t1, t2, rect);
                 return {
                     active: true,
                     initialZoom: viewport.zoom,
                     initialPanX: viewport.panX,
                     initialPanY: viewport.panY,
                     initialDist: this.distance(t1, t2),
-                    initialMidX: (t1.clientX + t2.clientX) / 2 - rect.left,
-                    initialMidY: (t1.clientY + t2.clientY) / 2 - rect.top
+                    initialMidX: mid.x,
+                    initialMidY: mid.y
                 };
             }
         };
@@ -1116,32 +1124,39 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             calcPinchZoom(touchState, currentDist, currentMid, minZoom, maxZoom) {
                 const zoomDelta = currentDist / touchState.initialDist;
                 const newZoom = this.clampZoom(touchState.initialZoom * zoomDelta, minZoom, maxZoom);
-
-                const worldMidX = (touchState.initialMidX - touchState.initialPanX) / touchState.initialZoom;
-                const worldMidY = (touchState.initialMidY - touchState.initialPanY) / touchState.initialZoom;
-
+                const world = Viewport.screenToWorld(
+                    touchState.initialMidX, touchState.initialMidY,
+                    touchState.initialZoom, touchState.initialPanX, touchState.initialPanY
+                );
                 return {
                     zoom: newZoom,
-                    panX: currentMid.x - worldMidX * newZoom,
-                    panY: currentMid.y - worldMidY * newZoom
+                    panX: currentMid.x - world.x * newZoom,
+                    panY: currentMid.y - world.y * newZoom
                 };
             },
 
             /**
-             * @pure Calculate new viewport state for wheel zoom.
-             * Returns {zoom, panX, panY} without mutating anything.
+             * @pure Zoom towards a screen point. Returns new viewport state.
+             * @example ZoomMath.zoomTowards(100, 100, 2, {zoom:1, panX:0, panY:0}) // zoom to 2x at (100,100)
              */
-            calcWheelZoom(mouseX, mouseY, currentZoom, currentPanX, currentPanY, delta, minZoom, maxZoom) {
-                const factor = delta > 0 ? 0.9 : 1.1;
-                const newZoom = this.clampZoom(currentZoom * factor, minZoom, maxZoom);
-
-                const worldX = (mouseX - currentPanX) / currentZoom;
-                const worldY = (mouseY - currentPanY) / currentZoom;
-
+            zoomTowards(screenX, screenY, newZoom, viewport) {
+                const world = Viewport.screenToWorld(screenX, screenY, viewport.zoom, viewport.panX, viewport.panY);
                 return {
                     zoom: newZoom,
-                    panX: mouseX - worldX * newZoom,
-                    panY: mouseY - worldY * newZoom
+                    panX: screenX - world.x * newZoom,
+                    panY: screenY - world.y * newZoom
+                };
+            },
+
+            /**
+             * @pure Apply pan delta. Returns new viewport state.
+             * @example ZoomMath.pan({zoom:1, panX:0, panY:0}, 10, 20) // => {zoom:1, panX:-10, panY:-20}
+             */
+            pan(viewport, deltaX, deltaY) {
+                return {
+                    zoom: viewport.zoom,
+                    panX: viewport.panX - deltaX,
+                    panY: viewport.panY - deltaY
                 };
             }
         };
@@ -1183,11 +1198,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             const rect = canvas.getBoundingClientRect();
             const dist = TouchMath.distance(e.touches[0], e.touches[1]);
             const mid = TouchMath.midpoint(e.touches[0], e.touches[1], rect);
-            const newState = ZoomMath.calcPinchZoom(touchState, dist, mid, Viewport.minZoom, Viewport.maxZoom);
-
-            Viewport.zoom = newState.zoom;
-            Viewport.panX = newState.panX;
-            Viewport.panY = newState.panY;
+            Viewport.apply(ZoomMath.calcPinchZoom(touchState, dist, mid, Viewport.minZoom, Viewport.maxZoom));
             renderFast();
         }, { passive: false });
 
@@ -1199,7 +1210,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 
         canvas.addEventListener('dblclick', async () => {
             if (Viewport.zoom !== 1 || Viewport.panX !== 0 || Viewport.panY !== 0) {
-                Viewport.reset();
+                Viewport.apply(Viewport.defaults());
                 if (currentNode) {
                     await renderTreemap(currentNode);
                 }
@@ -1217,23 +1228,20 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             if (e.ctrlKey) {
                 // Pinch-to-zoom: zoom towards cursor
                 const rect = canvas.getBoundingClientRect();
-                const zoomFactor = 1 - e.deltaY * 0.01;
                 const newZoom = ZoomMath.clampZoom(
-                    Viewport.zoom * zoomFactor,
+                    Viewport.zoom * (1 - e.deltaY * 0.01),
                     Viewport.minZoom,
                     Viewport.maxZoom
                 );
-                const mouseX = e.clientX - rect.left;
-                const mouseY = e.clientY - rect.top;
-                const worldX = (mouseX - Viewport.panX) / Viewport.zoom;
-                const worldY = (mouseY - Viewport.panY) / Viewport.zoom;
-                Viewport.panX = mouseX - worldX * newZoom;
-                Viewport.panY = mouseY - worldY * newZoom;
-                Viewport.zoom = newZoom;
+                Viewport.apply(ZoomMath.zoomTowards(
+                    e.clientX - rect.left,
+                    e.clientY - rect.top,
+                    newZoom,
+                    Viewport
+                ));
             } else {
                 // Two-finger pan
-                Viewport.panX -= e.deltaX;
-                Viewport.panY -= e.deltaY;
+                Viewport.apply(ZoomMath.pan(Viewport, e.deltaX, e.deltaY));
             }
             renderFast();
         }, { passive: false });
@@ -1274,7 +1282,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             if (!currentNode) return;
             clearTimeout(resizeTimeout);
             resizeTimeout = setTimeout(async () => {
-                Viewport.reset();
+                Viewport.apply(Viewport.defaults());
                 await renderTreemap(currentNode);
             }, 150);
         });
@@ -1452,7 +1460,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
          * ============================================================ */
 
         async function processFile(file) {
-            Viewport.reset();
+            Viewport.apply(Viewport.defaults());
             ProgressUI.show({ stages: ['read', 'parse', 'tree', 'render'], showInfo: true });
             let lastYield = performance.now();
 
