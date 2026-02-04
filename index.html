@@ -78,6 +78,12 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             position: relative;
         }
         #canvas { display: block; cursor: pointer; transform-origin: 0 0; }
+        #textOverlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+        }
 
         /* Tooltip */
         #tooltip {
@@ -192,6 +198,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
     </div>
     <div id="container">
         <canvas id="canvas"></canvas>
+        <canvas id="textOverlay"></canvas>
     </div>
     <div id="tooltip" class="glass glass-panel"></div>
     <div id="loading" class="glass glass-panel">
@@ -718,6 +725,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
          * ============================================================ */
 
         const canvas = document.getElementById('canvas');
+        const textCanvas = document.getElementById('textOverlay');
+        const textCtx = textCanvas.getContext('2d');
         let ctx = null;  // Initialized lazily based on renderer choice
 
         let rootData = null;
@@ -725,6 +734,79 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         let renderedRects = [];
         let canvasCSSWidth = 0;
         let canvasCSSHeight = 0;
+
+        /**
+         * Collect visible labels by traversing tree with pruning.
+         * Skips branches that are outside viewport or too small for labels.
+         */
+        function collectVisibleLabels(node, results, zoom, panX, panY, viewW, viewH, minW, minH) {
+            if (!node.bounds) return;
+            const { x, y, width, height } = node.bounds;
+
+            // Screen-space bounds
+            const sx = x * zoom + panX;
+            const sy = y * zoom + panY;
+            const sw = width * zoom;
+            const sh = height * zoom;
+
+            // Prune: outside viewport
+            if (sx + sw < 0 || sx > viewW || sy + sh < 0 || sy > viewH) return;
+
+            // Prune: too small to ever have labels
+            if (sw < minW && sh < minH) return;
+
+            if (node.children) {
+                for (const child of node.children) {
+                    collectVisibleLabels(child, results, zoom, panX, panY, viewW, viewH, minW, minH);
+                }
+            } else if (sw >= minW && sh >= minH) {
+                // Leaf node large enough for label
+                results.push({ node, sx, sy, sw, sh });
+            }
+        }
+
+        /** Render text labels on overlay canvas using tree traversal */
+        function renderLabels() {
+            const scale = Format.renderScale();
+            const { zoom, panX, panY } = Viewport;
+
+            // Clear overlay
+            textCtx.clearRect(0, 0, textCanvas.width, textCanvas.height);
+
+            if (!currentNode) return;
+
+            // Collect visible labels using tree traversal with pruning
+            const labels = [];
+            collectVisibleLabels(
+                currentNode, labels,
+                zoom, panX, panY,
+                canvasCSSWidth, canvasCSSHeight,
+                Config.LABEL_MIN_WIDTH, Config.LABEL_MIN_HEIGHT
+            );
+
+            // Set up text style once
+            textCtx.fillStyle = 'rgba(255,255,255,0.9)';
+            textCtx.font = `${11 * scale}px -apple-system, BlinkMacSystemFont, sans-serif`;
+            textCtx.shadowColor = 'rgba(0,0,0,0.8)';
+            textCtx.shadowBlur = 2 * scale;
+            textCtx.shadowOffsetX = 0;
+            textCtx.shadowOffsetY = 1 * scale;
+
+            for (const { node, sx, sy, sw, sh } of labels) {
+                const text = node.name;
+                const maxWidth = sw * scale - Config.LABEL_PADDING_X * 2 * scale;
+                let displayText = text;
+                if (textCtx.measureText(text).width > maxWidth) {
+                    while (displayText.length > 3 && textCtx.measureText(displayText + '…').width > maxWidth) {
+                        displayText = displayText.slice(0, -1);
+                    }
+                    displayText += '…';
+                }
+                textCtx.fillText(displayText, sx * scale + Config.LABEL_PADDING_X * scale, sy * scale + Config.LABEL_PADDING_Y * scale);
+            }
+
+            textCtx.shadowBlur = 0;
+        }
 
         async function renderTreemap(node, onProgress) {
             currentNode = node;
@@ -739,6 +821,12 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             canvas.height = canvasCSSHeight * scale;
             canvas.style.width = canvasCSSWidth + 'px';
             canvas.style.height = canvasCSSHeight + 'px';
+
+            // Size text overlay to match
+            textCanvas.width = canvasCSSWidth * scale;
+            textCanvas.height = canvasCSSHeight * scale;
+            textCanvas.style.width = canvasCSSWidth + 'px';
+            textCanvas.style.height = canvasCSSHeight + 'px';
 
             // Collect all leaf rects (in CSS pixel space)
             renderedRects = [];
@@ -755,6 +843,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 WebGLRenderer.setRects(renderedRects);
                 // Render with viewport transform (use CSS dimensions for coordinate space)
                 WebGLRenderer.render(Viewport, canvasCSSWidth, canvasCSSHeight);
+                // Render text labels on overlay
+                renderLabels();
                 return { drawn: renderedRects.length, culled: 0 };
             } else {
                 // Canvas2D path - init context lazily
@@ -1234,6 +1324,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         function renderFast() {
             if (Config.USE_WEBGL && webglInitialized) {
                 WebGLRenderer.render(Viewport, canvasCSSWidth, canvasCSSHeight);
+                renderLabels();
             }
         }
 
