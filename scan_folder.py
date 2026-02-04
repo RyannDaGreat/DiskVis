@@ -104,7 +104,14 @@ def load_json_zstd(input_path: Path) -> dict:
 
 
 def scan(path: str = "~", output: str = None, follow_symlinks: bool = False):
-    """Scan a folder and optionally save as JSON + zstd."""
+    """
+    Scan a folder and optionally save as JSON + zstd.
+
+    Args:
+        path: Path to scan.
+        output: Output file (.json.zst).
+        follow_symlinks: Follow symbolic links.
+    """
     target = Path(path).expanduser().resolve()
     print(f"Scanning {target}...", file=sys.stderr)
 
