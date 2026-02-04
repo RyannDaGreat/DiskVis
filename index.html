@@ -128,11 +128,14 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
-        // Build tree from flat file list
-        function buildTree(files, rootPath) {
+        // Build tree from flat file list (async with progress)
+        async function buildTree(files, rootPath, onProgress) {
             const root = { name: rootPath, path: rootPath, size: 0, children: {} };
+            const total = files.length;
+            const batchSize = 10000;
 
-            for (const { size, path } of files) {
+            for (let i = 0; i < files.length; i++) {
+                const { size, path } = files[i];
                 const relativePath = path.startsWith(rootPath)
                     ? path.slice(rootPath.length).replace(/^\//, '')
                     : path;
@@ -140,14 +143,14 @@
                 const parts = relativePath.split('/').filter(p => p);
                 let current = root;
 
-                for (let i = 0; i < parts.length; i++) {
-                    const part = parts[i];
-                    const isFile = i === parts.length - 1;
+                for (let j = 0; j < parts.length; j++) {
+                    const part = parts[j];
+                    const isFile = j === parts.length - 1;
 
                     if (!current.children[part]) {
                         current.children[part] = {
                             name: part,
-                            path: rootPath + '/' + parts.slice(0, i + 1).join('/'),
+                            path: rootPath + '/' + parts.slice(0, j + 1).join('/'),
                             size: 0,
                             children: isFile ? null : {}
                         };
@@ -166,6 +169,11 @@
                 for (const part of parts) {
                     current.size += size;
                     current = current.children[part];
+                }
+
+                if (i % batchSize === 0 && onProgress) {
+                    onProgress(i, total);
+                    await new Promise(r => requestAnimationFrame(r));
                 }
             }
 
@@ -316,7 +324,7 @@
             }
         }
 
-        function renderTreemap(node) {
+        async function renderTreemap(node, onProgress) {
             currentNode = node;
             updateStats();
 
@@ -336,26 +344,28 @@
             const baseRect = { x: 0, y: 0, width, height };
             collectLeafRects(node, baseRect, renderedRects);
 
-            // Draw all rects
-            drawCanvas();
+            // Draw all rects with progress
+            await drawCanvas(onProgress);
         }
 
-        function drawCanvas() {
+        async function drawCanvas(onProgress) {
             const width = canvas.width / (window.devicePixelRatio || 1);
             const height = canvas.height / (window.devicePixelRatio || 1);
 
             ctx.fillStyle = '#1a1a2e';
             ctx.fillRect(0, 0, width, height);
 
-            for (const rect of renderedRects) {
+            const total = renderedRects.length;
+            const batchSize = 5000;
+
+            for (let i = 0; i < renderedRects.length; i++) {
+                const rect = renderedRects[i];
                 const { x, y, w, h, colorIdx } = rect;
                 const [r, g, b] = colorsRGB[colorIdx];
 
                 // Create gradient for cushion effect
                 const gradient = ctx.createLinearGradient(x, y, x + w, y + h);
-                // Dark (60% brightness)
                 const dark = `rgb(${Math.round(r * 0.6)}, ${Math.round(g * 0.6)}, ${Math.round(b * 0.6)})`;
-                // Light (130% brightness, clamped)
                 const light = `rgb(${Math.min(255, Math.round(r * 1.3))}, ${Math.min(255, Math.round(g * 1.3))}, ${Math.min(255, Math.round(b * 1.3))})`;
                 gradient.addColorStop(0, dark);
                 gradient.addColorStop(1, light);
@@ -388,6 +398,11 @@
                     }
                     ctx.fillText(displayText, x + 4, y + 12);
                     ctx.shadowBlur = 0;
+                }
+
+                if (i % batchSize === 0 && onProgress) {
+                    onProgress(i, total);
+                    await new Promise(r => requestAnimationFrame(r));
                 }
             }
         }
@@ -443,7 +458,7 @@
         }
 
         window.addEventListener('resize', () => {
-            if (currentNode) renderTreemap(currentNode);
+            if (currentNode) renderTreemap(currentNode, null);
         });
 
         // Load JSON+zstd from file picker
@@ -487,21 +502,26 @@
                     byInode.set(file.inode, file);
                 }
                 if (i % batchSize === 0) {
-                    const pct = 10 + Math.round((i / totalFiles) * 70);
+                    const pct = 10 + Math.round((i / totalFiles) * 40);
                     setProgress(`Parsing ${i.toLocaleString()} / ${totalFiles.toLocaleString()} files...`, pct);
                     await new Promise(r => requestAnimationFrame(r));
                 }
             }
             const uniqueFiles = Array.from(byInode.values());
 
-            setProgress(`Building tree (${uniqueFiles.length.toLocaleString()} files)...`, 85);
-            await new Promise(r => requestAnimationFrame(r));
-            rootData = buildTree(uniqueFiles, header.root);
+            // Build tree with progress (50-80%)
+            rootData = await buildTree(uniqueFiles, header.root, (done, total) => {
+                const pct = 50 + Math.round((done / total) * 30);
+                setProgress(`Building tree ${done.toLocaleString()} / ${total.toLocaleString()}...`, pct);
+            });
 
-            setProgress('Rendering...', 95);
-            await new Promise(r => requestAnimationFrame(r));
+            // Render with progress (80-100%)
+            await renderTreemap(rootData, (done, total) => {
+                const pct = 80 + Math.round((done / total) * 20);
+                setProgress(`Rendering ${done.toLocaleString()} / ${total.toLocaleString()} rects...`, pct);
+            });
+
             loading.style.display = 'none';
-            renderTreemap(rootData);
         }
 
         fileInput.addEventListener('change', e => {
