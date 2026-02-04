@@ -8,10 +8,12 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 5. Composition over inheritance - Build from small reusable pieces
 6. Simplicity - Minimal structure now, expand as needed, no over-engineering
 7. Performance with UX - 120fps target, time-based yielding not hardcoded batches
-8. Same pathway, less code - Reuse code paths with configuration, not duplication
+8. DRY - Don't repeat yourself. Extract helpers, reuse code paths with configuration
 9. Group pure functions into labeled objects - Related pure functions belong together
-   in a named object (e.g., Geometry, TouchMath). Event handlers should be thin,
-   delegating logic to pure functions. Mark objects containing only pure functions.
+   in a named object (e.g., ZoomMath, TouchMath). Mark with "@pure All methods are
+   pure functions." Event handlers should be thin, delegating logic to pure functions.
+10. Stateful service objects are distinct - Renderers (e.g., WebGLRenderer) and
+    other stateful objects are NOT pure. Document what state they manage.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -842,7 +844,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         }
 
         /**
-         * WebGLRenderer - High-performance renderer using WebGL.
+         * WebGLRenderer - Stateful WebGL renderer for treemap rectangles.
+         * State: gl, program, vao, buffers, rectCount
          * Draws all rectangles in a single draw call using instancing.
          */
         const WebGLRenderer = {
@@ -1537,6 +1540,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             loading.style.background = '';
             if (e.dataTransfer.files[0]) processFile(e.dataTransfer.files[0]);
         });
+
     </script>
 </body>
 </html>
