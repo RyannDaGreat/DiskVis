@@ -44,6 +44,13 @@
             display: block;
             cursor: pointer;
         }
+        /* Glassmorphism mixin - reusable milky glass effect */
+        .glass {
+            background: rgba(30, 30, 50, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
         #loading {
             position: fixed;
             top: 50%;
@@ -52,12 +59,22 @@
             font-size: 14px;
             text-align: left;
             padding: 30px 40px;
-            border: 2px dashed #444;
-            border-radius: 12px;
+            border-radius: 16px;
             cursor: pointer;
             width: 450px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            transition: opacity 0.4s ease, filter 0.4s ease, transform 0.4s ease;
+            opacity: 1;
+            filter: blur(0);
         }
-        #loading.processing { cursor: default; border-style: solid; }
+        #loading.hidden {
+            opacity: 0;
+            filter: blur(8px);
+            transform: translate(-50%, -50%) scale(0.95);
+            pointer-events: none;
+        }
+        #loading:not(.processing) { border: 2px dashed rgba(255,255,255,0.2); background: rgba(30,30,50,0.5); }
+        #loading.processing { cursor: default; }
         #loading #fileInput {
             position: absolute;
             top: 0;
@@ -67,24 +84,56 @@
             opacity: 0;
             cursor: pointer;
         }
-        #loading:hover { border-color: #6c9bcf; }
+        #loading:hover { border-color: rgba(108,155,207,0.5); }
         #loading .drop-text { text-align: center; font-size: 16px; }
         #loading .progress-section { display: none; }
         #loading.processing .drop-text { display: none; }
         #loading.processing .progress-section { display: block; }
-        #loading .progress-row { margin-bottom: 12px; }
-        #loading .progress-label {
+        #loading .stages {
             display: flex;
             justify-content: space-between;
-            margin-bottom: 4px;
-            color: #888;
-            font-size: 12px;
+            margin-bottom: 20px;
         }
-        #loading .progress-label span:first-child { color: #eee; }
+        #loading .stage {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+        }
+        #loading .stage-bubble {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.08);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: rgba(255,255,255,0.25);
+            font-size: 18px;
+            transition: all 0.3s ease;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+        }
+        #loading .stage.active .stage-bubble {
+            background: rgba(108,155,207,0.4);
+            color: #6c9bcf;
+            box-shadow: 0 0 12px rgba(108,155,207,0.6), 0 0 24px rgba(108,155,207,0.3), inset 0 1px 2px rgba(255,255,255,0.2);
+        }
+        #loading .stage.done .stage-bubble {
+            background: rgba(69,210,176,0.4);
+            color: #45D2B0;
+            box-shadow: 0 0 12px rgba(69,210,176,0.6), 0 0 24px rgba(69,210,176,0.3), inset 0 1px 2px rgba(255,255,255,0.2);
+        }
+        #loading .stage-label {
+            font-size: 10px;
+            color: #555;
+            transition: color 0.3s ease;
+        }
+        #loading .stage.active .stage-label { color: #6c9bcf; }
+        #loading .stage.done .stage-label { color: #45D2B0; }
         #loading .progress-bar {
             width: 100%;
             height: 6px;
-            background: #333;
+            background: rgba(255,255,255,0.1);
             border-radius: 3px;
             overflow: hidden;
         }
@@ -94,18 +143,25 @@
             border-radius: 3px;
             width: 0%;
         }
-        #loading .progress-fill.step { background: #45D2B0; }
-        #loading .current-file {
+        #loading .progress-info {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 8px;
+            font-size: 11px;
+            color: #888;
+        }
+        #loading .progress-info-line {
             font-size: 11px;
             color: #666;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            margin-top: 8px;
+            margin-top: 12px;
             height: 14px;
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.min.js"></script>
+    <script src="https://code.iconify.design/3/3.1.0/iconify.min.js"></script>
 </head>
 <body>
     <div id="header">
@@ -116,18 +172,33 @@
         <canvas id="canvas"></canvas>
     </div>
     <div id="tooltip"></div>
-    <div id="loading">
+    <div id="loading" class="glass">
         <div class="drop-text">Drop .json.zst file here</div>
         <div class="progress-section">
-            <div class="progress-row">
-                <div class="progress-label"><span id="overallLabel">Overall</span><span id="overallPct">0%</span></div>
-                <div class="progress-bar"><div class="progress-fill" id="overallFill"></div></div>
+            <div class="stages">
+                <div class="stage" id="stage-read">
+                    <div class="stage-bubble"><span class="iconify" data-icon="mdi:file-download-outline"></span></div>
+                    <div class="stage-label">Read</div>
+                </div>
+                <div class="stage" id="stage-parse">
+                    <div class="stage-bubble"><span class="iconify" data-icon="mdi:code-json"></span></div>
+                    <div class="stage-label">Parse</div>
+                </div>
+                <div class="stage" id="stage-tree">
+                    <div class="stage-bubble"><span class="iconify" data-icon="mdi:file-tree-outline"></span></div>
+                    <div class="stage-label">Build</div>
+                </div>
+                <div class="stage" id="stage-render">
+                    <div class="stage-bubble"><span class="iconify" data-icon="mdi:brush-outline"></span></div>
+                    <div class="stage-label">Render</div>
+                </div>
             </div>
-            <div class="progress-row">
-                <div class="progress-label"><span id="stepLabel">Step</span><span id="stepPct">0%</span></div>
-                <div class="progress-bar"><div class="progress-fill step" id="stepFill"></div></div>
+            <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+            <div class="progress-info">
+                <span id="progressLabel">Loading...</span>
+                <span id="progressPct">0%</span>
             </div>
-            <div class="current-file" id="currentFile"></div>
+            <div class="progress-info-line" id="progressInfoLine"></div>
         </div>
         <input type="file" id="fileInput" accept=".zst">
     </div>
@@ -154,6 +225,16 @@
             return [(num >> 16), ((num >> 8) & 0xFF), (num & 0xFF)];
         });
 
+        /**
+         * @pure
+         * Format bytes as human-readable string.
+         * @param {number} bytes
+         * @returns {string}
+         * @example formatBytes(0) // => '0 B'
+         * @example formatBytes(1024) // => '1 KB'
+         * @example formatBytes(1536) // => '1.5 KB'
+         * @example formatBytes(1073741824) // => '1 GB'
+         */
         function formatBytes(bytes) {
             if (bytes === 0) return '0 B';
             const k = 1024;
@@ -284,6 +365,17 @@
             }
         }
 
+        /**
+         * @pure
+         * Calculate worst aspect ratio in a row of treemap items.
+         * Lower is better (1.0 = perfect square).
+         * @param {Array} row - Items with normalizedSize
+         * @param {number} area - Total area of row
+         * @param {number} side - Length of the fixed side
+         * @returns {number} Worst aspect ratio (>=1), or Infinity if invalid
+         * @example worstRatio([], 0, 0) // => Infinity
+         * @example worstRatio([{normalizedSize: 100}], 100, 10) // => 1
+         */
         function worstRatio(row, area, side) {
             if (row.length === 0 || area === 0 || side === 0) return Infinity;
             const rowWidth = area / side;
@@ -320,6 +412,15 @@
             return { usedWidth: isWide ? rowThickness : 0, usedHeight: isWide ? 0 : rowThickness };
         }
 
+        /**
+         * @pure
+         * Hash a string to a 32-bit integer using djb2 algorithm.
+         * @param {string} str - Input string
+         * @returns {number} 32-bit hash
+         * @example hashString('') // => 0
+         * @example hashString('txt') // => 115801
+         * @example hashString('jpg') // => 105765
+         */
         function hashString(str) {
             let hash = 0;
             for (let i = 0; i < str.length; i++) {
@@ -329,6 +430,15 @@
             return hash;
         }
 
+        /**
+         * @pure
+         * Get color palette index for a filename based on its extension.
+         * @param {string} name - Filename
+         * @returns {number} Index into colors array (0-15)
+         * @example getColorIndexForExtension('foo.txt') // => 9
+         * @example getColorIndexForExtension('bar.jpg') // => 5
+         * @example getColorIndexForExtension('noext') // => 0
+         */
         function getColorIndexForExtension(name) {
             const dot = name.lastIndexOf('.');
             const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
@@ -495,89 +605,162 @@
         const loading = document.getElementById('loading');
         const fileInput = document.getElementById('fileInput');
 
-        // === PROGRESS BAR LOGIC (PURE FUNCTIONS) ===
+        /**
+         * Progress - Pure functions for progress bar calculations.
+         * All functions are stateless and have no DOM dependencies.
+         *
+         * @example
+         * Progress.calcOverall('parse', 50) // => 30 (halfway through parse phase)
+         * Progress.calcStep(500, 1000) // => 50
+         * Progress.formatPath('/very/long/path/...') // => '...ong/path/...'
+         * Progress.shouldYield(lastTime, 120) // => true if 8.3ms elapsed
+         */
+        const Progress = {
+            TARGET_FPS: 120,
 
-        const TARGET_FPS = 120;
-        const FRAME_MS = 1000 / TARGET_FPS;
+            /** Phase ranges as [start%, end%] of overall progress */
+            PHASES: {
+                read: [0, 5],
+                decompress: [5, 10],
+                parse: [10, 50],
+                tree: [50, 80],
+                render: [80, 100]
+            },
 
-        function calcOverallPercent(phase, stepPercent) {
-            const phases = { read: [0, 5], decompress: [5, 10], parse: [10, 50], tree: [50, 80], render: [80, 100] };
-            const [start, end] = phases[phase] || [0, 100];
-            return Math.round(start + (stepPercent / 100) * (end - start));
-        }
+            /**
+             * Calculate overall percentage from phase and step progress.
+             * @param {string} phase - Phase name (read|decompress|parse|tree|render)
+             * @param {number} stepPercent - Progress within phase (0-100)
+             * @returns {number} Overall progress (0-100)
+             * @example Progress.calcOverall('parse', 50) // => 30
+             */
+            calcOverall(phase, stepPercent) {
+                const [start, end] = this.PHASES[phase] || [0, 100];
+                return Math.round(start + (stepPercent / 100) * (end - start));
+            },
 
-        function calcStepPercent(done, total) {
-            return total > 0 ? Math.round((done / total) * 100) : 0;
-        }
+            /**
+             * Calculate step percentage from done/total counts.
+             * @param {number} done - Items completed
+             * @param {number} total - Total items
+             * @returns {number} Percentage (0-100)
+             * @example Progress.calcStep(250, 1000) // => 25
+             */
+            calcStep(done, total) {
+                return total > 0 ? Math.round((done / total) * 100) : 0;
+            },
 
-        function formatPath(path) {
-            return path.length > 60 ? '...' + path.slice(-57) : path;
-        }
+            /**
+             * Truncate path for display, keeping start and end visible.
+             * @param {string} path - Full file path
+             * @param {number} maxLen - Maximum length (default 60)
+             * @returns {string} Truncated path with '....' in middle if needed
+             * @example Progress.formatPath('/a/b/c/d/e/f/g.txt', 20) // => '/a/b/..../f/g.txt'
+             */
+            formatPath(path, maxLen = 60) {
+                if (path.length <= maxLen) return path;
+                const ellipsis = '....';
+                const available = maxLen - ellipsis.length;
+                const startLen = Math.ceil(available / 2);
+                const endLen = Math.floor(available / 2);
+                return path.slice(0, startLen) + ellipsis + path.slice(-endLen);
+            },
 
-        function shouldYield(lastYield) {
-            return performance.now() - lastYield >= FRAME_MS;
-        }
+            /**
+             * Check if enough time elapsed to yield for UI update.
+             * @param {number} lastYield - Timestamp of last yield (performance.now())
+             * @returns {boolean} True if should yield
+             * @example Progress.shouldYield(performance.now() - 10) // => true (at 120fps)
+             */
+            shouldYield(lastYield) {
+                return performance.now() - lastYield >= (1000 / this.TARGET_FPS);
+            },
 
-        async function yieldFrame() {
-            await new Promise(r => requestAnimationFrame(r));
-            return performance.now();
-        }
+            /**
+             * Yield to allow UI update, returns new timestamp.
+             * @returns {Promise<number>} New timestamp after frame
+             */
+            async yieldFrame() {
+                await new Promise(r => requestAnimationFrame(r));
+                return performance.now();
+            }
+        };
 
-        // === PROGRESS BAR UI ===
+        /**
+         * ProgressUI - DOM rendering for progress state.
+         * Separated from pure logic to allow testing/reuse of Progress.
+         */
+        const ProgressUI = {
+            STAGES: ['read', 'parse', 'tree', 'render'],
 
-        function showProgress() {
-            loading.classList.add('processing');
-        }
+            /** Show progress UI, hide drop text */
+            show() {
+                loading.classList.add('processing');
+                this.resetStages();
+            },
 
-        function hideProgress() {
-            loading.classList.remove('processing');
-            loading.style.display = 'none';
-        }
+            /** Hide progress UI with fade-out transition */
+            hide() {
+                loading.classList.add('hidden');
+            },
 
-        function setOverall(label, percent) {
-            document.getElementById('overallLabel').textContent = label;
-            document.getElementById('overallPct').textContent = percent + '%';
-            document.getElementById('overallFill').style.width = percent + '%';
-        }
+            /** Reset all stages to off state */
+            resetStages() {
+                this.STAGES.forEach(id => {
+                    const el = document.getElementById('stage-' + id);
+                    el.classList.remove('active', 'done');
+                });
+            },
 
-        function setStep(label, percent) {
-            document.getElementById('stepLabel').textContent = label;
-            document.getElementById('stepPct').textContent = percent + '%';
-            document.getElementById('stepFill').style.width = percent + '%';
-        }
+            /**
+             * Set stage state: 'off', 'active', or 'done'
+             * @param {string} stage - Stage id (read|parse|tree|render)
+             * @param {string} state - State (off|active|done)
+             */
+            setStage(stage, state) {
+                const el = document.getElementById('stage-' + stage);
+                el.classList.remove('active', 'done');
+                if (state === 'active') el.classList.add('active');
+                if (state === 'done') el.classList.add('done');
+            },
 
-        function setCurrentFile(path) {
-            document.getElementById('currentFile').textContent = path ? formatPath(path) : '';
-        }
+            /** Update progress bar */
+            setProgress(label, percent) {
+                document.getElementById('progressLabel').textContent = label;
+                document.getElementById('progressPct').textContent = percent + '%';
+                document.getElementById('progressFill').style.width = percent + '%';
+            },
+
+            /** Update info line (context-dependent text) */
+            setInfo(text) {
+                document.getElementById('progressInfoLine').textContent = text || '';
+            }
+        };
 
         async function processFile(file) {
-            showProgress();
+            ProgressUI.show();
             let lastYield = performance.now();
 
-            // Read
-            setOverall('Reading', 0);
-            setStep('Reading file', 0);
-            setCurrentFile(file.name);
-            lastYield = await yieldFrame();
+            // Stage 1: Read
+            ProgressUI.setStage('read', 'active');
+            ProgressUI.setProgress('Reading file...', 0);
+            ProgressUI.setInfo(file.name);
+            lastYield = await Progress.yieldFrame();
             const compressed = new Uint8Array(await file.arrayBuffer());
-            setOverall('Reading', calcOverallPercent('read', 100));
-            setStep('Reading file', 100);
+            ProgressUI.setStage('read', 'done');
 
-            // Decompress
-            setOverall('Decompressing', calcOverallPercent('decompress', 0));
-            setStep('Decompressing', 0);
-            lastYield = await yieldFrame();
+            // Stage 2: Parse (includes decompress)
+            ProgressUI.setStage('parse', 'active');
+            ProgressUI.setProgress('Decompressing...', 0);
+            ProgressUI.setInfo('');
+            lastYield = await Progress.yieldFrame();
             const decompressed = fzstd.decompress(compressed);
             const text = new TextDecoder().decode(decompressed);
             const lines = text.split('\n');
-            setOverall('Decompressing', calcOverallPercent('decompress', 100));
-            setStep('Decompressing', 100);
 
-            // Parse header
             const header = JSON.parse(lines[0]);
             const totalFiles = header.count || lines.length - 1;
 
-            // Parse files
             const byInode = new Map();
             let lastPath = '';
             for (let i = 1; i < lines.length; i++) {
@@ -589,42 +772,41 @@
                 if (!existing || fileObj.path.length < existing.path.length) {
                     byInode.set(fileObj.inode, fileObj);
                 }
-                if (shouldYield(lastYield)) {
-                    const stepPct = calcStepPercent(i, totalFiles);
-                    setOverall('Parsing', calcOverallPercent('parse', stepPct));
-                    setStep(`Parsing ${i.toLocaleString()} / ${totalFiles.toLocaleString()}`, stepPct);
-                    setCurrentFile(lastPath);
-                    lastYield = await yieldFrame();
+                if (Progress.shouldYield(lastYield)) {
+                    const pct = Progress.calcStep(i, totalFiles);
+                    ProgressUI.setProgress(`Parsing ${i.toLocaleString()} / ${totalFiles.toLocaleString()}`, pct);
+                    ProgressUI.setInfo(Progress.formatPath(lastPath));
+                    lastYield = await Progress.yieldFrame();
                 }
             }
             const uniqueFiles = Array.from(byInode.values());
-            setOverall('Parsing', calcOverallPercent('parse', 100));
-            setStep('Parsing', 100);
+            ProgressUI.setStage('parse', 'done');
 
-            // Build tree
+            // Stage 3: Build tree
+            ProgressUI.setStage('tree', 'active');
+            ProgressUI.setInfo(`${uniqueFiles.length.toLocaleString()} unique files`);
             rootData = await buildTree(uniqueFiles, header.root, async (done, total, path) => {
-                if (shouldYield(lastYield)) {
-                    const stepPct = calcStepPercent(done, total);
-                    setOverall('Building tree', calcOverallPercent('tree', stepPct));
-                    setStep(`Building ${done.toLocaleString()} / ${total.toLocaleString()}`, stepPct);
-                    if (path) setCurrentFile(path);
-                    lastYield = await yieldFrame();
+                if (Progress.shouldYield(lastYield)) {
+                    const pct = Progress.calcStep(done, total);
+                    ProgressUI.setProgress(`Building ${done.toLocaleString()} / ${total.toLocaleString()}`, pct);
+                    lastYield = await Progress.yieldFrame();
                 }
             });
-            setOverall('Building tree', calcOverallPercent('tree', 100));
-            setStep('Building tree', 100);
+            ProgressUI.setStage('tree', 'done');
 
-            // Render
+            // Stage 4: Render
+            ProgressUI.setStage('render', 'active');
+            ProgressUI.setInfo('');
             await renderTreemap(rootData, async (done, total) => {
-                if (shouldYield(lastYield)) {
-                    const stepPct = calcStepPercent(done, total);
-                    setOverall('Rendering', calcOverallPercent('render', stepPct));
-                    setStep(`Drawing ${done.toLocaleString()} / ${total.toLocaleString()} rects`, stepPct);
-                    lastYield = await yieldFrame();
+                if (Progress.shouldYield(lastYield)) {
+                    const pct = Progress.calcStep(done, total);
+                    ProgressUI.setProgress(`Drawing ${done.toLocaleString()} / ${total.toLocaleString()} rectangles`, pct);
+                    lastYield = await Progress.yieldFrame();
                 }
             });
+            ProgressUI.setStage('render', 'done');
 
-            hideProgress();
+            ProgressUI.hide();
         }
 
         fileInput.addEventListener('change', e => {
