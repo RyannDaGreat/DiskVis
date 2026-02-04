@@ -109,7 +109,7 @@
         #loading.processing .progress-section { display: block; }
 
         /* Stage bubbles */
-        .stages { display: flex; justify-content: space-between; margin-bottom: 20px; }
+        .stages { display: flex; justify-content: center; gap: 40px; margin-bottom: 20px; }
         .stage { display: flex; flex-direction: column; align-items: center; gap: 6px; }
         .stage-bubble {
             width: 36px;
@@ -208,6 +208,9 @@
         const Config = {
             /** Target frames per second for progress updates */
             TARGET_FPS: 120,
+
+            /** Debounce delay for resize redraw (ms) */
+            RESIZE_DEBOUNCE_MS: 500,
 
             /** Internal render scale (2 = render at 2x, display at 1x for more detail) */
             RENDER_SCALE: 2,
@@ -648,20 +651,24 @@
             return { files, folders };
         }
 
-        window.addEventListener('resize', async () => {
+        let resizeTimeout = null;
+        window.addEventListener('resize', () => {
             if (!currentNode) return;
-            ProgressUI.show({ stages: ['render'], showInfo: false });
-            ProgressUI.setStage('render', 'active');
-            let lastYield = performance.now();
-            await renderTreemap(currentNode, async (i, total, drawn) => {
-                if (Progress.shouldYield(lastYield)) {
-                    const pct = Progress.calcStep(i, total);
-                    ProgressUI.setProgress(`Redrawing ${drawn.toLocaleString()}`, pct);
-                    lastYield = await Progress.yieldFrame();
-                }
-            });
-            ProgressUI.setStage('render', 'done');
-            ProgressUI.hide();
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(async () => {
+                ProgressUI.show({ stages: ['render'], showInfo: false });
+                ProgressUI.setStage('render', 'active');
+                let lastYield = performance.now();
+                await renderTreemap(currentNode, async (i, total, drawn) => {
+                    if (Progress.shouldYield(lastYield)) {
+                        const pct = Progress.calcStep(i, total);
+                        ProgressUI.setProgress(`Redrawing ${drawn.toLocaleString()}`, pct);
+                        lastYield = await Progress.yieldFrame();
+                    }
+                });
+                ProgressUI.setStage('render', 'done');
+                ProgressUI.hide();
+            }, Config.RESIZE_DEBOUNCE_MS);
         });
 
         // Load JSON+zstd from file picker
