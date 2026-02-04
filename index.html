@@ -5,29 +5,60 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Disk Space Treemap</title>
     <style>
+        :root {
+            --bg: #1a1a2e;
+            --glass-bg: rgba(30, 30, 50, 0.75);
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --accent: #6c9bcf;
+            --accent-glow: rgba(108, 155, 207, 0.5);
+            --success: #45D2B0;
+            --success-glow: rgba(69, 210, 176, 0.5);
+            --text: #eee;
+            --text-dim: #888;
+            --text-dimmer: #555;
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
+            background: var(--bg);
+            color: var(--text);
             overflow: hidden;
         }
+
+        /* Glassmorphism base */
+        .glass {
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+        }
+        .glass-panel {
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        /* Layout */
         #header {
             padding: 10px 20px;
-            background: #16213e;
             display: flex;
             justify-content: space-between;
             align-items: center;
             gap: 20px;
         }
         #header h1 { font-size: 18px; font-weight: 500; }
-        #stats { font-size: 13px; color: #888; }
+        #stats { font-size: 13px; color: var(--text-dim); }
+
+        #container {
+            width: 100vw;
+            height: calc(100vh - 50px);
+            position: relative;
+        }
+        #canvas { display: block; cursor: pointer; }
+
+        /* Tooltip */
         #tooltip {
             position: fixed;
-            background: rgba(0,0,0,0.9);
-            color: #fff;
             padding: 8px 12px;
-            border-radius: 4px;
             font-size: 12px;
             pointer-events: none;
             z-index: 1000;
@@ -35,22 +66,8 @@
             max-width: 500px;
             word-wrap: break-word;
         }
-        #container {
-            width: 100vw;
-            height: calc(100vh - 50px);
-            position: relative;
-        }
-        #canvas {
-            display: block;
-            cursor: pointer;
-        }
-        /* Glassmorphism mixin - reusable milky glass effect */
-        .glass {
-            background: rgba(30, 30, 50, 0.7);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
+
+        /* Loading panel */
         #loading {
             position: fixed;
             top: 50%;
@@ -62,10 +79,7 @@
             border-radius: 16px;
             cursor: pointer;
             width: 450px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
             transition: opacity 0.4s ease, filter 0.4s ease, transform 0.4s ease;
-            opacity: 1;
-            filter: blur(0);
         }
         #loading.hidden {
             opacity: 0;
@@ -73,34 +87,28 @@
             transform: translate(-50%, -50%) scale(0.95);
             pointer-events: none;
         }
-        #loading:not(.processing) { border: 2px dashed rgba(255,255,255,0.2); background: rgba(30,30,50,0.5); }
+        #loading:not(.processing) {
+            border: 2px dashed rgba(255,255,255,0.2);
+            background: rgba(30,30,50,0.5);
+        }
+        #loading:hover { border-color: var(--accent-glow); }
         #loading.processing { cursor: default; }
+
         #loading #fileInput {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            inset: 0;
             opacity: 0;
             cursor: pointer;
         }
-        #loading:hover { border-color: rgba(108,155,207,0.5); }
         #loading .drop-text { text-align: center; font-size: 16px; }
         #loading .progress-section { display: none; }
         #loading.processing .drop-text { display: none; }
         #loading.processing .progress-section { display: block; }
-        #loading .stages {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 20px;
-        }
-        #loading .stage {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 6px;
-        }
-        #loading .stage-bubble {
+
+        /* Stage bubbles */
+        .stages { display: flex; justify-content: space-between; margin-bottom: 20px; }
+        .stage { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+        .stage-bubble {
             width: 36px;
             height: 36px;
             border-radius: 50%;
@@ -113,46 +121,43 @@
             transition: all 0.3s ease;
             box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
         }
-        #loading .stage.active .stage-bubble {
+        .stage.active .stage-bubble {
             background: rgba(108,155,207,0.4);
-            color: #6c9bcf;
-            box-shadow: 0 0 12px rgba(108,155,207,0.6), 0 0 24px rgba(108,155,207,0.3), inset 0 1px 2px rgba(255,255,255,0.2);
+            color: var(--accent);
+            box-shadow: 0 0 12px var(--accent-glow), 0 0 24px rgba(108,155,207,0.3), inset 0 1px 2px rgba(255,255,255,0.2);
         }
-        #loading .stage.done .stage-bubble {
+        .stage.done .stage-bubble {
             background: rgba(69,210,176,0.4);
-            color: #45D2B0;
-            box-shadow: 0 0 12px rgba(69,210,176,0.6), 0 0 24px rgba(69,210,176,0.3), inset 0 1px 2px rgba(255,255,255,0.2);
+            color: var(--success);
+            box-shadow: 0 0 12px var(--success-glow), 0 0 24px rgba(69,210,176,0.3), inset 0 1px 2px rgba(255,255,255,0.2);
         }
-        #loading .stage-label {
-            font-size: 10px;
-            color: #555;
-            transition: color 0.3s ease;
-        }
-        #loading .stage.active .stage-label { color: #6c9bcf; }
-        #loading .stage.done .stage-label { color: #45D2B0; }
-        #loading .progress-bar {
-            width: 100%;
+        .stage-label { font-size: 10px; color: var(--text-dimmer); transition: color 0.3s ease; }
+        .stage.active .stage-label { color: var(--accent); }
+        .stage.done .stage-label { color: var(--success); }
+
+        /* Progress bar */
+        .progress-bar {
             height: 6px;
             background: rgba(255,255,255,0.1);
             border-radius: 3px;
             overflow: hidden;
         }
-        #loading .progress-fill {
+        .progress-fill {
             height: 100%;
-            background: #6c9bcf;
+            background: var(--accent);
             border-radius: 3px;
             width: 0%;
         }
-        #loading .progress-info {
+        .progress-info {
             display: flex;
             justify-content: space-between;
             margin-top: 8px;
             font-size: 11px;
-            color: #888;
+            color: var(--text-dim);
         }
-        #loading .progress-info-line {
+        .progress-info-line {
             font-size: 11px;
-            color: #666;
+            color: var(--text-dimmer);
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -164,15 +169,15 @@
     <script src="https://code.iconify.design/3/3.1.0/iconify.min.js"></script>
 </head>
 <body>
-    <div id="header">
+    <div id="header" class="glass">
         <h1>Disk Space Visualization</h1>
         <div id="stats"></div>
     </div>
     <div id="container">
         <canvas id="canvas"></canvas>
     </div>
-    <div id="tooltip"></div>
-    <div id="loading" class="glass">
+    <div id="tooltip" class="glass glass-panel"></div>
+    <div id="loading" class="glass glass-panel">
         <div class="drop-text">Drop .json.zst file here</div>
         <div class="progress-section">
             <div class="stages">
