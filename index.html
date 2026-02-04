@@ -275,7 +275,11 @@
             updateBreadcrumb();
             updateStats();
 
-            const rect = { x: 0, y: 0, width: container.clientWidth, height: container.clientHeight };
+            const baseRect = { x: 0, y: 0, width: container.clientWidth, height: container.clientHeight };
+            renderNode(node, baseRect, container, 0);
+        }
+
+        function renderNode(node, rect, container, depth) {
             const children = node.children || [];
             if (children.length === 0) return;
 
@@ -283,54 +287,77 @@
 
             layouts.forEach((layout, index) => {
                 const { item, rect: r } = layout;
-                if (r.width < 2 || r.height < 2) return;
+                if (r.width < 1 || r.height < 1) return;
 
-                const div = document.createElement('div');
-                div.className = 'treemap-rect';
-                div.style.left = r.x + 'px';
-                div.style.top = r.y + 'px';
-                div.style.width = r.width + 'px';
-                div.style.height = r.height + 'px';
-
-                const baseColor = colors[index % colors.length];
                 const hasChildren = item.children && item.children.length > 0;
 
-                div.style.background = hasChildren ? baseColor : lightenColor(baseColor, -10 + (index % 20));
-                div.style.border = '1px solid rgba(0,0,0,0.3)';
-
-                if (r.width > 40 && r.height > 20) {
-                    const label = document.createElement('div');
-                    label.className = 'treemap-label';
-                    label.textContent = item.name;
-                    div.appendChild(label);
-                }
-
-                div.addEventListener('mouseenter', () => {
-                    const tooltip = document.getElementById('tooltip');
-                    const type = hasChildren ? 'Folder' : 'File';
-                    tooltip.innerHTML = `<strong>${item.name}</strong><br>${type}: ${formatBytes(item.size)}<br><small>${item.path}</small>`;
-                    tooltip.style.display = 'block';
-                });
-
-                div.addEventListener('mousemove', (e) => {
-                    const tooltip = document.getElementById('tooltip');
-                    tooltip.style.left = (e.clientX + 15) + 'px';
-                    tooltip.style.top = (e.clientY + 15) + 'px';
-                });
-
-                div.addEventListener('mouseleave', () => {
-                    document.getElementById('tooltip').style.display = 'none';
-                });
-
                 if (hasChildren) {
-                    div.addEventListener('click', () => {
-                        navigationStack.push(currentNode);
-                        renderTreemap(item, container);
-                    });
-                }
+                    // Recursively render children - no box for directories
+                    renderNode(item, r, container, depth + 1);
+                } else {
+                    // Leaf file - render colored rectangle
+                    const div = document.createElement('div');
+                    div.className = 'treemap-rect';
+                    div.style.left = r.x + 'px';
+                    div.style.top = r.y + 'px';
+                    div.style.width = r.width + 'px';
+                    div.style.height = r.height + 'px';
 
-                container.appendChild(div);
+                    // Color based on file extension
+                    const ext = item.name.split('.').pop().toLowerCase();
+                    const color = getColorForExtension(ext);
+                    div.style.background = color;
+                    div.style.border = '1px solid rgba(0,0,0,0.2)';
+
+                    if (r.width > 30 && r.height > 14) {
+                        const label = document.createElement('div');
+                        label.className = 'treemap-label';
+                        label.textContent = item.name;
+                        div.appendChild(label);
+                    }
+
+                    div.addEventListener('mouseenter', () => {
+                        const tooltip = document.getElementById('tooltip');
+                        tooltip.innerHTML = `<strong>${item.name}</strong><br>${formatBytes(item.size)}<br><small>${item.path}</small>`;
+                        tooltip.style.display = 'block';
+                    });
+
+                    div.addEventListener('mousemove', (e) => {
+                        const tooltip = document.getElementById('tooltip');
+                        tooltip.style.left = (e.clientX + 15) + 'px';
+                        tooltip.style.top = (e.clientY + 15) + 'px';
+                    });
+
+                    div.addEventListener('mouseleave', () => {
+                        document.getElementById('tooltip').style.display = 'none';
+                    });
+
+                    container.appendChild(div);
+                }
             });
+        }
+
+        function getColorForExtension(ext) {
+            const extColors = {
+                // Images
+                jpg: '#e74c3c', jpeg: '#e74c3c', png: '#c0392b', gif: '#a93226', webp: '#922b21', heic: '#7b241c',
+                // Video
+                mp4: '#9b59b6', mov: '#8e44ad', avi: '#7d3c98', mkv: '#6c3483', m4v: '#5b2c6f',
+                // Audio
+                mp3: '#3498db', wav: '#2980b9', flac: '#1f618d', aac: '#1a5276', m4a: '#154360',
+                // Documents
+                pdf: '#e67e22', doc: '#2ecc71', docx: '#27ae60', xls: '#1abc9c', xlsx: '#16a085',
+                // Code
+                js: '#f1c40f', ts: '#f39c12', py: '#3498db', java: '#e74c3c', cpp: '#9b59b6', c: '#8e44ad',
+                html: '#e67e22', css: '#3498db', json: '#95a5a6', xml: '#7f8c8d',
+                // Archives
+                zip: '#34495e', tar: '#2c3e50', gz: '#1c2833', rar: '#17202a', '7z': '#0b0c0d',
+                // Data
+                db: '#795548', sqlite: '#6d4c41', csv: '#5d4037',
+                // Other
+                txt: '#bdc3c7', md: '#95a5a6', log: '#7f8c8d',
+            };
+            return extColors[ext] || '#607d8b';
         }
 
         function lightenColor(hex, amount) {
