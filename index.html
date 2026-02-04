@@ -102,12 +102,13 @@
         let currentNode = null;
         let navigationStack = [];
 
-        // GrandPerspective-style palette (evenly spaced hues, good saturation)
-        const colors = [];
-        for (let i = 0; i < 24; i++) {
-            const hue = (i * 15) % 360; // 24 colors, 15° apart
-            colors.push(`hsl(${hue}, 70%, 50%)`);
-        }
+        // GrandPerspective "Rainbow" palette (exact colors from source)
+        const colors = [
+            '#FFFF54', '#C8E64C', '#8CD466', '#4DC742',
+            '#45D2B0', '#46ACD3', '#438CCB', '#4262C7',
+            '#5240C3', '#8C3FC0', '#D145C1', '#E64C8D',
+            '#FF5454', '#FF8054', '#FFA054', '#FFB554'
+        ];
 
         function formatBytes(bytes) {
             if (bytes === 0) return '0 B';
@@ -307,20 +308,12 @@
                     div.style.width = Math.round(r.width) + 'px';
                     div.style.height = Math.round(r.height) + 'px';
 
-                    // GrandPerspective cushion: dark top-left to bright bottom-right
+                    // GrandPerspective cushion gradient: dark top-left to bright bottom-right
                     const baseColor = parentColor || getColorForExtension(item.name);
-                    // Parse HSL and create gradient variants
-                    const match = baseColor.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/);
-                    if (match) {
-                        const [_, h, s, l] = match;
-                        const darkL = Math.max(0, l - 20);
-                        const lightL = Math.min(100, parseInt(l) + 20);
-                        const lightS = Math.max(0, s - 20);
-                        div.style.background = `linear-gradient(135deg, hsl(${h},${s}%,${darkL}%) 0%, hsl(${h},${lightS}%,${lightL}%) 100%)`;
-                    } else {
-                        div.style.background = baseColor;
-                    }
-                    div.style.border = '1px solid rgba(0,0,0,0.15)';
+                    const darkColor = adjustBrightness(baseColor, 0.6);  // 60% brightness
+                    const lightColor = adjustBrightness(baseColor, 1.3); // 130% brightness
+                    div.style.background = `linear-gradient(135deg, ${darkColor} 0%, ${lightColor} 100%)`;
+                    div.style.border = '1px solid rgba(0,0,0,0.1)';
 
                     if (r.width > 30 && r.height > 14) {
                         const label = document.createElement('div');
@@ -367,12 +360,53 @@
             return colors[hash % colors.length];
         }
 
-        function lightenColor(hex, amount) {
+        // Convert hex to HSB, adjust brightness, convert back to hex
+        // GrandPerspective uses HSB: dark = reduce brightness, light = increase brightness + reduce saturation
+        function adjustBrightness(hex, factor) {
             const num = parseInt(hex.slice(1), 16);
-            const r = Math.min(255, Math.max(0, (num >> 16) + amount));
-            const g = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amount));
-            const b = Math.min(255, Math.max(0, (num & 0x0000FF) + amount));
-            return '#' + (0x1000000 + r * 0x10000 + g * 0x100 + b).toString(16).slice(1);
+            let r = (num >> 16) / 255;
+            let g = ((num >> 8) & 0xFF) / 255;
+            let b = (num & 0xFF) / 255;
+
+            // RGB to HSB
+            const max = Math.max(r, g, b), min = Math.min(r, g, b);
+            const d = max - min;
+            let h = 0, s = max === 0 ? 0 : d / max, v = max;
+
+            if (d !== 0) {
+                if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+                else if (max === g) h = ((b - r) / d + 2) / 6;
+                else h = ((r - g) / d + 4) / 6;
+            }
+
+            // Adjust: factor < 1 = darken (reduce brightness)
+            //         factor > 1 = lighten (increase brightness, reduce saturation)
+            if (factor < 1) {
+                v *= factor;
+            } else {
+                v = Math.min(1, v * factor);
+                s *= Math.max(0, 2 - factor); // reduce saturation as we brighten
+            }
+
+            // HSB to RGB
+            const i = Math.floor(h * 6);
+            const f = h * 6 - i;
+            const p = v * (1 - s);
+            const q = v * (1 - f * s);
+            const t = v * (1 - (1 - f) * s);
+
+            let r2, g2, b2;
+            switch (i % 6) {
+                case 0: r2 = v; g2 = t; b2 = p; break;
+                case 1: r2 = q; g2 = v; b2 = p; break;
+                case 2: r2 = p; g2 = v; b2 = t; break;
+                case 3: r2 = p; g2 = q; b2 = v; break;
+                case 4: r2 = t; g2 = p; b2 = v; break;
+                case 5: r2 = v; g2 = p; b2 = q; break;
+            }
+
+            const toHex = x => Math.round(x * 255).toString(16).padStart(2, '0');
+            return '#' + toHex(r2) + toHex(g2) + toHex(b2);
         }
 
         function updateBreadcrumb() {
