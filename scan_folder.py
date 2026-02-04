@@ -3,10 +3,10 @@
 Disk scanner using bfs, saves as JSON + zstd.
 
 Usage:
-    python scan_folder.py /path/to/scan                   # scan and print stats
-    python scan_folder.py /path/to/scan -o scan.json.zst  # scan and save
-    python scan_folder.py /path/to/scan -L                # follow symlinks
-    python scan_folder.py -f scan.json.zst                # load and print stats
+    python scan_folder.py scan /path                      # scan and print stats
+    python scan_folder.py scan /path --output=scan.json.zst
+    python scan_folder.py scan /path --follow_symlinks
+    python scan_folder.py load scan.json.zst              # load and print stats
 
 Requires: bfs (brew install bfs / apt install bfs)
 
@@ -55,9 +55,9 @@ import subprocess
 import sys
 import time
 import json
-import argparse
 from pathlib import Path
 
+import fire
 import zstandard as zstd
 from rp.r import _ensure_bfs_installed
 
@@ -103,47 +103,40 @@ def load_json_zstd(input_path: Path) -> dict:
     return json.loads(zstd.ZstdDecompressor().decompress(compressed))
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Scan folders and save as JSON + zstd')
-    parser.add_argument('path', nargs='?', help='Path to scan')
-    parser.add_argument('-o', '--output', help='Output file (.json.zst)')
-    parser.add_argument('-f', '--file', help='Load from file instead of scanning')
-    parser.add_argument('-L', '--follow-symlinks', action='store_true', help='Follow symlinks')
-    args = parser.parse_args()
-
-    if args.file:
-        print(f"Loading {args.file}...", file=sys.stderr)
-        data = load_json_zstd(Path(args.file))
-        files = data['files']
-        print(f"Root: {data['root']}", file=sys.stderr)
-        print(f"Scanned: {time.ctime(data['timestamp'])}", file=sys.stderr)
-        print(f"Files: {len(files):,}", file=sys.stderr)
-        total = sum(f[1] for f in files)
-        print(f"Total: {total / 1e9:.2f} GB", file=sys.stderr)
-        return
-
-    target = Path(args.path).expanduser().resolve() if args.path else Path.home()
+def scan(path: str = "~", output: str = None, follow_symlinks: bool = False):
+    """Scan a folder and optionally save as JSON + zstd."""
+    target = Path(path).expanduser().resolve()
     print(f"Scanning {target}...", file=sys.stderr)
 
     files = []
-    count = 0
     total_size = 0
 
-    for inode, size, path in scan_with_bfs(target, follow_symlinks=args.follow_symlinks):
-        files.append([inode, size, path])
-        count += 1
+    for inode, size, fpath in scan_with_bfs(target, follow_symlinks=follow_symlinks):
+        files.append([inode, size, fpath])
+        if len(files) % 10000 == 0:
+            print(f"  {len(files):,} files, {total_size / 1e9:.1f} GB...", file=sys.stderr)
         total_size += size
-        if count % 10000 == 0:
-            print(f"  {count:,} files, {total_size / 1e9:.1f} GB...", file=sys.stderr)
 
-    print(f"Done: {count:,} files, {total_size / 1e9:.2f} GB", file=sys.stderr)
+    print(f"Done: {len(files):,} files, {total_size / 1e9:.2f} GB", file=sys.stderr)
 
-    if args.output:
-        compressed_size = save_json_zstd(files, Path(args.output), str(target))
-        raw_estimate = count * 50  # rough estimate: 50 bytes per file entry
+    if output:
+        compressed_size = save_json_zstd(files, Path(output), str(target))
+        raw_estimate = len(files) * 50
         ratio = (1 - compressed_size / raw_estimate) * 100 if raw_estimate > 0 else 0
-        print(f"Saved: {args.output} ({compressed_size / 1e6:.2f} MB, ~{ratio:.0f}% compression)", file=sys.stderr)
+        print(f"Saved: {output} ({compressed_size / 1e6:.2f} MB, ~{ratio:.0f}% compression)", file=sys.stderr)
+
+
+def load(path: str):
+    """Load and print stats from a saved scan."""
+    print(f"Loading {path}...", file=sys.stderr)
+    data = load_json_zstd(Path(path))
+    files = data['files']
+    print(f"Root: {data['root']}", file=sys.stderr)
+    print(f"Scanned: {time.ctime(data['timestamp'])}", file=sys.stderr)
+    print(f"Files: {len(files):,}", file=sys.stderr)
+    total = sum(f[1] for f in files)
+    print(f"Total: {total / 1e9:.2f} GB", file=sys.stderr)
 
 
 if __name__ == "__main__":
-    main()
+    fire.Fire({"scan": scan, "load": load})
