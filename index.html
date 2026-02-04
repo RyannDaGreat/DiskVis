@@ -9,6 +9,9 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 6. Simplicity - Minimal structure now, expand as needed, no over-engineering
 7. Performance with UX - 120fps target, time-based yielding not hardcoded batches
 8. Same pathway, less code - Reuse code paths with configuration, not duplication
+9. Group pure functions into labeled objects - Related pure functions belong together
+   in a named object (e.g., Geometry, TouchMath). Event handlers should be thin,
+   delegating logic to pure functions. Mark objects containing only pure functions.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -210,6 +213,78 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         let currentNode = null;
         let renderedRects = [];
 
+        /**
+         * Viewport - Pan/zoom state and pure transform functions.
+         */
+        const Viewport = {
+            zoom: 1,
+            panX: 0,
+            panY: 0,
+            minZoom: 1,
+            maxZoom: 20,
+
+            /** Reset to default view */
+            reset() {
+                this.zoom = 1;
+                this.panX = 0;
+                this.panY = 0;
+            },
+
+            /**
+             * @pure
+             * Transform screen coordinates to world coordinates.
+             * @param {number} screenX
+             * @param {number} screenY
+             * @param {number} zoom
+             * @param {number} panX
+             * @param {number} panY
+             * @returns {{x: number, y: number}}
+             */
+            screenToWorld(screenX, screenY, zoom, panX, panY) {
+                return {
+                    x: (screenX - panX) / zoom,
+                    y: (screenY - panY) / zoom
+                };
+            },
+
+            /**
+             * @pure
+             * Transform world coordinates to screen coordinates.
+             * @param {number} worldX
+             * @param {number} worldY
+             * @param {number} zoom
+             * @param {number} panX
+             * @param {number} panY
+             * @returns {{x: number, y: number}}
+             */
+            worldToScreen(worldX, worldY, zoom, panX, panY) {
+                return {
+                    x: worldX * zoom + panX,
+                    y: worldY * zoom + panY
+                };
+            },
+
+            /**
+             * @pure
+             * Check if a rect is visible in the viewport.
+             * @param {Object} rect - {x, y, w, h} in world coords
+             * @param {number} viewWidth - Viewport width
+             * @param {number} viewHeight - Viewport height
+             * @param {number} zoom
+             * @param {number} panX
+             * @param {number} panY
+             * @returns {boolean}
+             */
+            isRectVisible(rect, viewWidth, viewHeight, zoom, panX, panY) {
+                const screenX = rect.x * zoom + panX;
+                const screenY = rect.y * zoom + panY;
+                const screenW = rect.w * zoom;
+                const screenH = rect.h * zoom;
+                return screenX + screenW > 0 && screenX < viewWidth &&
+                       screenY + screenH > 0 && screenY < viewHeight;
+            }
+        };
+
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
 
@@ -305,14 +380,32 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         });
 
         /**
-         * @pure
-         * Get the total render scale (internal scale × device pixel ratio).
-         * @returns {number}
-         * @example getRenderScale() // => 4 (on 2x retina with RENDER_SCALE=2)
+         * Format - Pure formatting utility functions.
+         * @pure All methods are pure functions.
          */
-        function getRenderScale() {
-            return Config.RENDER_SCALE * (window.devicePixelRatio || 1);
-        }
+        const Format = {
+            /**
+             * @pure Format bytes as human-readable string.
+             * @example Format.bytes(0) // => '0 B'
+             * @example Format.bytes(1024) // => '1 KB'
+             * @example Format.bytes(1073741824) // => '1 GB'
+             */
+            bytes(bytes) {
+                if (bytes === 0) return '0 B';
+                const k = 1024;
+                const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            },
+
+            /**
+             * @pure Get the total render scale.
+             * @example Format.renderScale() // => 4 (on 2x retina with RENDER_SCALE=2)
+             */
+            renderScale() {
+                return Config.RENDER_SCALE * (window.devicePixelRatio || 1);
+            }
+        };
 
         /**
          * @pure
@@ -331,23 +424,6 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             );
         }
 
-        /**
-         * @pure
-         * Format bytes as human-readable string.
-         * @param {number} bytes
-         * @returns {string}
-         * @example formatBytes(0) // => '0 B'
-         * @example formatBytes(1024) // => '1 KB'
-         * @example formatBytes(1536) // => '1.5 KB'
-         * @example formatBytes(1073741824) // => '1 GB'
-         */
-        function formatBytes(bytes) {
-            if (bytes === 0) return '0 B';
-            const k = 1024;
-            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-        }
 
         // Build tree from flat file list (async with progress)
         async function buildTree(files, rootPath, onProgress) {
@@ -537,38 +613,34 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         }
 
         /**
-         * @pure
-         * Hash a string to a 32-bit integer using djb2 algorithm.
-         * @param {string} str - Input string
-         * @returns {number} 32-bit hash
-         * @example hashString('') // => 0
-         * @example hashString('txt') // => 115801
-         * @example hashString('jpg') // => 105765
+         * ColorUtils - Pure functions for color assignment.
+         * @pure All methods are pure functions.
          */
-        function hashString(str) {
-            let hash = 0;
-            for (let i = 0; i < str.length; i++) {
-                hash = ((hash << 5) - hash) + str.charCodeAt(i);
-                hash |= 0;
-            }
-            return hash;
-        }
+        const ColorUtils = {
+            /**
+             * @pure Hash a string to a 32-bit integer using djb2 algorithm.
+             * @example ColorUtils.hash('txt') // => 115801
+             */
+            hash(str) {
+                let hash = 0;
+                for (let i = 0; i < str.length; i++) {
+                    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+                    hash |= 0;
+                }
+                return hash;
+            },
 
-        /**
-         * @pure
-         * Get color palette index for a filename based on its extension.
-         * @param {string} name - Filename
-         * @returns {number} Index into colors array (0-15)
-         * @example getColorIndexForExtension('foo.txt') // => 9
-         * @example getColorIndexForExtension('bar.jpg') // => 5
-         * @example getColorIndexForExtension('noext') // => 0
-         */
-        function getColorIndexForExtension(name) {
-            const dot = name.lastIndexOf('.');
-            const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
-            const hash = Math.abs(hashString(ext));
-            return hash % Config.COLORS.length;
-        }
+            /**
+             * @pure Get color palette index for a filename based on its extension.
+             * @example ColorUtils.indexForExtension('foo.txt') // => 9
+             * @example ColorUtils.indexForExtension('noext') // => 0
+             */
+            indexForExtension(name) {
+                const dot = name.lastIndexOf('.');
+                const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+                return Math.abs(this.hash(ext)) % Config.COLORS.length;
+            }
+        };
 
         // Collect all leaf rectangles recursively
         /**
@@ -592,44 +664,42 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     collectLeafRects(item, r, results);
                 } else {
                     item.bounds = r;  // Store bounds on leaf too
-                    const colorIdx = getColorIndexForExtension(item.name);
+                    const colorIdx = ColorUtils.indexForExtension(item.name);
                     results.push({ item, x: r.x, y: r.y, w: r.width, h: r.height, colorIdx });
                 }
             }
         }
 
         /**
-         * @pure
-         * Hit test a point against the tree, returning the leaf node at that position.
-         * Uses tree traversal O(depth) instead of iterating all rects O(n).
-         * @param {Object} node - Tree node with bounds and children
-         * @param {number} x - X coordinate
-         * @param {number} y - Y coordinate
-         * @returns {Object|null} Leaf node at position, or null if none
-         * @example hitTestTree(root, 100, 100) // => { name: 'file.txt', ... }
+         * TreeUtils - Pure functions for tree traversal.
+         * @pure All methods are pure functions.
          */
-        function hitTestTree(node, x, y) {
-            if (!node || !node.bounds) return null;
+        const TreeTraversal = {
+            /**
+             * @pure Hit test a point against the tree, returning the leaf node.
+             * Uses tree traversal O(depth) instead of O(n).
+             * @example TreeTraversal.hitTest(root, 100, 100) // => { name: 'file.txt', ... }
+             */
+            hitTest(node, x, y) {
+                if (!node || !node.bounds) return null;
 
-            const b = node.bounds;
-            // Check if point is within this node's bounds
-            if (x < b.x || x >= b.x + b.width || y < b.y || y >= b.y + b.height) {
+                const b = node.bounds;
+                if (x < b.x || x >= b.x + b.width || y < b.y || y >= b.y + b.height) {
+                    return null;
+                }
+
+                if (!node.children || node.children.length === 0) {
+                    return node;
+                }
+
+                for (const child of node.children) {
+                    const hit = this.hitTest(child, x, y);
+                    if (hit) return hit;
+                }
+
                 return null;
             }
-
-            // If leaf node, return it
-            if (!node.children || node.children.length === 0) {
-                return node;
-            }
-
-            // Search children
-            for (const child of node.children) {
-                const hit = hitTestTree(child, x, y);
-                if (hit) return hit;
-            }
-
-            return null;
-        }
+        };
 
         async function renderTreemap(node, onProgress) {
             currentNode = node;
@@ -638,7 +708,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             const container = document.getElementById('container');
             const cssWidth = container.clientWidth;
             const cssHeight = container.clientHeight;
-            const scale = getRenderScale();
+            const scale = Format.renderScale();
 
             canvas.width = cssWidth * scale;
             canvas.height = cssHeight * scale;
@@ -656,27 +726,42 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         }
 
         async function drawCanvas(onProgress) {
-            const scale = getRenderScale();
+            const scale = Format.renderScale();
             const width = canvas.width / scale;
             const height = canvas.height / scale;
+            const { zoom, panX, panY } = Viewport;
 
             ctx.fillStyle = '#1a1a2e';
             ctx.fillRect(0, 0, width, height);
 
             const total = renderedRects.length;
-            let drawn = 0;
+            let drawn = 0, culled = 0;
 
             for (let i = 0; i < renderedRects.length; i++) {
                 const rect = renderedRects[i];
                 const { x, y, w, h, colorIdx } = rect;
+
+                // Cull rects outside viewport
+                if (!Viewport.isRectVisible(rect, width, height, zoom, panX, panY)) {
+                    culled++;
+                    continue;
+                }
+
+                // Transform to screen coordinates
+                const sx = x * zoom + panX;
+                const sy = y * zoom + panY;
+                const sw = w * zoom;
+                const sh = h * zoom;
+
                 const [r, g, b] = colorsRGB[colorIdx];
-                const tier = RenderTier.get(w * Config.RENDER_SCALE, h * Config.RENDER_SCALE);
+                // Use screen-space dimensions for render tier (zoomed = more detail)
+                const tier = RenderTier.get(sw * Config.RENDER_SCALE, sh * Config.RENDER_SCALE);
 
                 drawn++;
 
                 if (tier === 'full') {
                     // Full render: gradient + stroke + label
-                    const gradient = ctx.createLinearGradient(x, y, x + w, y + h);
+                    const gradient = ctx.createLinearGradient(sx, sy, sx + sw, sy + sh);
                     const dark = `rgb(${Math.round(r * 0.6)}, ${Math.round(g * 0.6)}, ${Math.round(b * 0.6)})`;
                     const light = `rgb(${Math.min(255, Math.round(r * 1.3))}, ${Math.min(255, Math.round(g * 1.3))}, ${Math.min(255, Math.round(b * 1.3))})`;
                     gradient.addColorStop(0, dark);
@@ -687,17 +772,17 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
                 }
 
-                ctx.fillRect(x, y, w, h);
+                ctx.fillRect(sx, sy, sw, sh);
 
                 // Border for larger rects
-                if (RenderTier.hasStroke(w * Config.RENDER_SCALE, h * Config.RENDER_SCALE)) {
+                if (RenderTier.hasStroke(sw * Config.RENDER_SCALE, sh * Config.RENDER_SCALE)) {
                     ctx.strokeStyle = 'rgba(0,0,0,0.15)';
                     ctx.lineWidth = Config.STROKE_WIDTH;
-                    ctx.strokeRect(x, y, w, h);
+                    ctx.strokeRect(sx, sy, sw, sh);
                 }
 
-                // Label for largest rects
-                if (RenderTier.hasLabel(w, h)) {
+                // Label for largest rects (use screen dimensions)
+                if (RenderTier.hasLabel(sw, sh)) {
                     ctx.fillStyle = 'rgba(255,255,255,0.9)';
                     ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
                     ctx.shadowColor = 'rgba(0,0,0,0.8)';
@@ -706,7 +791,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     ctx.shadowOffsetY = 1;
 
                     const text = rect.item.name;
-                    const maxWidth = w - Config.LABEL_PADDING_X * 2;
+                    const maxWidth = sw - Config.LABEL_PADDING_X * 2;
                     let displayText = text;
                     if (ctx.measureText(text).width > maxWidth) {
                         while (displayText.length > 3 && ctx.measureText(displayText + '…').width > maxWidth) {
@@ -714,7 +799,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                         }
                         displayText += '…';
                     }
-                    ctx.fillText(displayText, x + Config.LABEL_PADDING_X, y + Config.LABEL_PADDING_Y);
+                    ctx.fillText(displayText, sx + Config.LABEL_PADDING_X, sy + Config.LABEL_PADDING_Y);
                     ctx.shadowBlur = 0;
                 }
 
@@ -723,7 +808,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 }
             }
 
-            return { drawn };
+            return { drawn, culled };
         }
 
         // Hit-testing for tooltip
@@ -732,12 +817,13 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             const mx = e.clientX - rect.left;
             const my = e.clientY - rect.top;
 
-            // Tree-based hit test: O(depth) instead of O(n)
-            const hit = currentNode ? hitTestTree(currentNode, mx, my) : null;
+            // Convert screen coords to world coords for hit testing
+            const world = Viewport.screenToWorld(mx, my, Viewport.zoom, Viewport.panX, Viewport.panY);
+            const hit = currentNode ? TreeTraversal.hitTest(currentNode, world.x, world.y) : null;
 
             const tooltip = document.getElementById('tooltip');
             if (hit) {
-                tooltip.innerHTML = `<strong>${hit.name}</strong><br>${formatBytes(hit.size)}<br><small>${hit.path}</small>`;
+                tooltip.innerHTML = `<strong>${hit.name}</strong><br>${Format.bytes(hit.size)}<br><small>${hit.path}</small>`;
                 tooltip.style.display = 'block';
                 tooltip.style.left = (e.clientX + 15) + 'px';
                 tooltip.style.top = (e.clientY + 15) + 'px';
@@ -750,25 +836,216 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             document.getElementById('tooltip').style.display = 'none';
         });
 
-        function updateStats() {
-            const stats = document.getElementById('stats');
-            const count = countItems(currentNode);
-            stats.textContent = `${formatBytes(currentNode.size)} | ${count.files} files, ${count.folders} folders`;
+        /**
+         * TouchMath - Pure functions for touch gesture calculations.
+         * @pure All methods are pure functions.
+         */
+        const TouchMath = {
+            /**
+             * @pure Distance between two touch points.
+             * @example TouchMath.distance({clientX:0,clientY:0}, {clientX:3,clientY:4}) // => 5
+             */
+            distance(t1, t2) {
+                const dx = t2.clientX - t1.clientX;
+                const dy = t2.clientY - t1.clientY;
+                return Math.sqrt(dx * dx + dy * dy);
+            },
+
+            /**
+             * @pure Midpoint between two touches, relative to a rect.
+             * @example TouchMath.midpoint(t1, t2, {left:0,top:0}) // => {x, y}
+             */
+            midpoint(t1, t2, rect) {
+                return {
+                    x: (t1.clientX + t2.clientX) / 2 - rect.left,
+                    y: (t1.clientY + t2.clientY) / 2 - rect.top
+                };
+            },
+
+            /**
+             * @pure Create initial touch state for pinch gesture.
+             */
+            createPinchState(t1, t2, rect, viewport) {
+                return {
+                    active: true,
+                    initialZoom: viewport.zoom,
+                    initialPanX: viewport.panX,
+                    initialPanY: viewport.panY,
+                    initialDist: this.distance(t1, t2),
+                    initialMidX: (t1.clientX + t2.clientX) / 2 - rect.left,
+                    initialMidY: (t1.clientY + t2.clientY) / 2 - rect.top
+                };
+            }
+        };
+
+        /**
+         * ZoomMath - Pure functions for zoom/pan calculations.
+         * @pure All methods are pure functions.
+         */
+        const ZoomMath = {
+            /**
+             * @pure Clamp zoom to valid range.
+             * @example ZoomMath.clampZoom(0.5, 1, 20) // => 1
+             */
+            clampZoom(zoom, min, max) {
+                return Math.max(min, Math.min(max, zoom));
+            },
+
+            /**
+             * @pure Calculate new viewport state for pinch zoom.
+             * Returns {zoom, panX, panY} without mutating anything.
+             */
+            calcPinchZoom(touchState, currentDist, currentMid, minZoom, maxZoom) {
+                const zoomDelta = currentDist / touchState.initialDist;
+                const newZoom = this.clampZoom(touchState.initialZoom * zoomDelta, minZoom, maxZoom);
+
+                const worldMidX = (touchState.initialMidX - touchState.initialPanX) / touchState.initialZoom;
+                const worldMidY = (touchState.initialMidY - touchState.initialPanY) / touchState.initialZoom;
+
+                return {
+                    zoom: newZoom,
+                    panX: currentMid.x - worldMidX * newZoom,
+                    panY: currentMid.y - worldMidY * newZoom
+                };
+            },
+
+            /**
+             * @pure Calculate new viewport state for wheel zoom.
+             * Returns {zoom, panX, panY} without mutating anything.
+             */
+            calcWheelZoom(mouseX, mouseY, currentZoom, currentPanX, currentPanY, delta, minZoom, maxZoom) {
+                const factor = delta > 0 ? 0.9 : 1.1;
+                const newZoom = this.clampZoom(currentZoom * factor, minZoom, maxZoom);
+
+                const worldX = (mouseX - currentPanX) / currentZoom;
+                const worldY = (mouseY - currentPanY) / currentZoom;
+
+                return {
+                    zoom: newZoom,
+                    panX: mouseX - worldX * newZoom,
+                    panY: mouseY - worldY * newZoom
+                };
+            }
+        };
+
+        // Touch/zoom state
+        let touchState = { active: false };
+        let viewportRedrawTimeout = null;
+
+        /** Debounced full redraw after interaction */
+        function scheduleRedraw() {
+            clearTimeout(viewportRedrawTimeout);
+            viewportRedrawTimeout = setTimeout(() => {
+                if (currentNode) renderTreemap(currentNode, null);
+            }, Config.RESIZE_DEBOUNCE_MS);
         }
 
-        function countItems(node) {
-            let files = 0, folders = 0;
-            if (node.children) {
-                folders++;
-                for (const child of node.children) {
-                    const c = countItems(child);
-                    files += c.files;
-                    folders += c.folders;
-                }
-            } else {
-                files = 1;
+        /** Synchronous fast redraw for live pan/zoom (solid colors only) */
+        function drawCanvasSync() {
+            const scale = Format.renderScale();
+            const width = canvas.width / scale;
+            const height = canvas.height / scale;
+            const { zoom, panX, panY } = Viewport;
+
+            ctx.fillStyle = '#1a1a2e';
+            ctx.fillRect(0, 0, width, height);
+
+            for (const rect of renderedRects) {
+                if (!Viewport.isRectVisible(rect, width, height, zoom, panX, panY)) continue;
+
+                const sx = rect.x * zoom + panX;
+                const sy = rect.y * zoom + panY;
+                const [r, g, b] = colorsRGB[rect.colorIdx];
+                ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                ctx.fillRect(sx, sy, rect.w * zoom, rect.h * zoom);
             }
-            return { files, folders };
+        }
+
+        // Touch handlers - thin, delegate to pure functions
+        canvas.addEventListener('touchstart', (e) => {
+            if (e.touches.length >= 2) {
+                e.preventDefault();
+                touchState = TouchMath.createPinchState(
+                    e.touches[0], e.touches[1],
+                    canvas.getBoundingClientRect(), Viewport
+                );
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('touchmove', (e) => {
+            if (!touchState.active || e.touches.length < 2) return;
+            e.preventDefault();
+
+            const rect = canvas.getBoundingClientRect();
+            const dist = TouchMath.distance(e.touches[0], e.touches[1]);
+            const mid = TouchMath.midpoint(e.touches[0], e.touches[1], rect);
+            const newState = ZoomMath.calcPinchZoom(touchState, dist, mid, Viewport.minZoom, Viewport.maxZoom);
+
+            Viewport.zoom = newState.zoom;
+            Viewport.panX = newState.panX;
+            Viewport.panY = newState.panY;
+            drawCanvasSync();
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', (e) => {
+            if (touchState.active && e.touches.length < 2) {
+                touchState.active = false;
+                scheduleRedraw();
+            }
+        });
+
+        canvas.addEventListener('dblclick', () => {
+            if (Viewport.zoom !== 1 || Viewport.panX !== 0 || Viewport.panY !== 0) {
+                Viewport.reset();
+                if (currentNode) renderTreemap(currentNode, null);
+            }
+        });
+
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const newState = ZoomMath.calcWheelZoom(
+                e.clientX - rect.left, e.clientY - rect.top,
+                Viewport.zoom, Viewport.panX, Viewport.panY,
+                e.deltaY, Viewport.minZoom, Viewport.maxZoom
+            );
+
+            Viewport.zoom = newState.zoom;
+            Viewport.panX = newState.panX;
+            Viewport.panY = newState.panY;
+            drawCanvasSync();
+            scheduleRedraw();
+        }, { passive: false });
+
+        /**
+         * TreeUtils - Pure functions for tree traversal and stats.
+         * @pure All methods are pure functions.
+         */
+        const TreeUtils = {
+            /**
+             * @pure Count files and folders in a tree.
+             * @example TreeUtils.countItems(node) // => { files: 100, folders: 10 }
+             */
+            countItems(node) {
+                let files = 0, folders = 0;
+                if (node.children) {
+                    folders++;
+                    for (const child of node.children) {
+                        const c = this.countItems(child);
+                        files += c.files;
+                        folders += c.folders;
+                    }
+                } else {
+                    files = 1;
+                }
+                return { files, folders };
+            }
+        };
+
+        function updateStats() {
+            const stats = document.getElementById('stats');
+            const count = TreeUtils.countItems(currentNode);
+            stats.textContent = `${Format.bytes(currentNode.size)} | ${count.files} files, ${count.folders} folders`;
         }
 
         let resizeTimeout = null;
@@ -776,6 +1053,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             if (!currentNode) return;
             clearTimeout(resizeTimeout);
             resizeTimeout = setTimeout(async () => {
+                Viewport.reset();  // Reset zoom on resize since canvas dimensions change
                 ProgressUI.show({ stages: ['render'], showInfo: false });
                 ProgressUI.setStage('render', 'active');
                 let lastYield = performance.now();
@@ -959,6 +1237,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         };
 
         async function processFile(file) {
+            Viewport.reset();
             ProgressUI.show({ stages: ['read', 'parse', 'tree', 'render'], showInfo: true });
             let lastYield = performance.now();
 
