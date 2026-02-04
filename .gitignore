@@ -1,3 +1,5 @@
+# Generated scan data
+*.cbor
 
 #<RP Default Gitignore Start>
 *.pyc

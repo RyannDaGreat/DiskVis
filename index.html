@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Disk Space Treemap</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            overflow: hidden;
+        }
+        #header {
+            padding: 10px 20px;
+            background: #16213e;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 20px;
+        }
+        #header h1 { font-size: 18px; font-weight: 500; }
+        #stats { font-size: 13px; color: #888; }
+        #breadcrumb {
+            font-size: 13px;
+            color: #888;
+            flex: 1;
+            text-align: right;
+        }
+        #breadcrumb span { cursor: pointer; color: #6c9bcf; }
+        #breadcrumb span:hover { text-decoration: underline; }
+        #tooltip {
+            position: fixed;
+            background: rgba(0,0,0,0.9);
+            color: #fff;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 1000;
+            display: none;
+            max-width: 500px;
+            word-wrap: break-word;
+        }
+        #container {
+            width: 100vw;
+            height: calc(100vh - 50px);
+            position: relative;
+        }
+        .treemap-rect {
+            position: absolute;
+            overflow: hidden;
+            cursor: pointer;
+            transition: filter 0.1s;
+        }
+        .treemap-rect:hover { filter: brightness(1.2); }
+        .treemap-label {
+            position: absolute;
+            top: 2px;
+            left: 4px;
+            font-size: 11px;
+            color: rgba(255,255,255,0.9);
+            text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+            pointer-events: none;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: calc(100% - 8px);
+        }
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 18px;
+            text-align: center;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cbor-js@0.1.0/cbor.min.js"></script>
+</head>
+<body>
+    <div id="header">
+        <h1>Disk Space Visualization</h1>
+        <div id="stats"></div>
+        <div id="breadcrumb"></div>
+    </div>
+    <div id="container"></div>
+    <div id="tooltip"></div>
+    <div id="loading">Loading data...</div>
+
+    <script>
+        let rootData = null;
+        let currentNode = null;
+        let navigationStack = [];
+
+        const colors = [
+            '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
+            '#1abc9c', '#e67e22', '#34495e', '#16a085', '#c0392b',
+            '#2980b9', '#27ae60', '#d35400', '#8e44ad', '#f1c40f',
+            '#00bcd4', '#ff5722', '#607d8b', '#795548', '#4caf50'
+        ];
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // Build tree from flat file list
+        function buildTree(files, rootPath) {
+            const root = { name: rootPath, path: rootPath, size: 0, children: {} };
+
+            for (const { size, path } of files) {
+                const relativePath = path.startsWith(rootPath)
+                    ? path.slice(rootPath.length).replace(/^\//, '')
+                    : path;
+
+                const parts = relativePath.split('/').filter(p => p);
+                let current = root;
+
+                for (let i = 0; i < parts.length; i++) {
+                    const part = parts[i];
+                    const isFile = i === parts.length - 1;
+
+                    if (!current.children[part]) {
+                        current.children[part] = {
+                            name: part,
+                            path: rootPath + '/' + parts.slice(0, i + 1).join('/'),
+                            size: 0,
+                            children: isFile ? null : {}
+                        };
+                    }
+
+                    if (isFile) {
+                        current.children[part].size = size;
+                        current.children[part].children = null;
+                    }
+
+                    current = current.children[part];
+                }
+
+                // Propagate size up
+                current = root;
+                for (const part of parts) {
+                    current.size += size;
+                    current = current.children[part];
+                }
+            }
+
+            // Convert children objects to sorted arrays
+            function convertChildren(node) {
+                if (node.children && typeof node.children === 'object') {
+                    const arr = Object.values(node.children);
+                    arr.forEach(convertChildren);
+                    arr.sort((a, b) => b.size - a.size);
+                    node.children = arr;
+                }
+                return node;
+            }
+
+            return convertChildren(root);
+        }
+
+        // Squarified treemap algorithm
+        function squarify(children, rect, getSize) {
+            if (!children || children.length === 0) return [];
+
+            const results = [];
+            const totalSize = children.reduce((sum, c) => sum + getSize(c), 0);
+            if (totalSize === 0) return [];
+
+            const area = rect.width * rect.height;
+            const normalized = children.map(c => ({
+                item: c,
+                normalizedSize: (getSize(c) / totalSize) * area
+            })).filter(x => x.normalizedSize > 0);
+
+            layoutRow(normalized, rect, results);
+            return results;
+        }
+
+        function layoutRow(items, rect, results) {
+            if (items.length === 0) return;
+
+            const isWide = rect.width >= rect.height;
+            const side = isWide ? rect.height : rect.width;
+
+            let row = [];
+            let rowArea = 0;
+            let remaining = [...items];
+
+            while (remaining.length > 0) {
+                const item = remaining[0];
+                const testRow = [...row, item];
+                const testArea = rowArea + item.normalizedSize;
+
+                const currentWorst = row.length > 0 ? worstRatio(row, rowArea, side) : Infinity;
+                const newWorst = worstRatio(testRow, testArea, side);
+
+                if (row.length === 0 || newWorst <= currentWorst) {
+                    row.push(item);
+                    rowArea += item.normalizedSize;
+                    remaining.shift();
+                } else {
+                    const rowRect = layoutRowRects(row, rowArea, rect, isWide, results);
+
+                    if (isWide) {
+                        rect = { x: rect.x + rowRect.usedWidth, y: rect.y,
+                                 width: rect.width - rowRect.usedWidth, height: rect.height };
+                    } else {
+                        rect = { x: rect.x, y: rect.y + rowRect.usedHeight,
+                                 width: rect.width, height: rect.height - rowRect.usedHeight };
+                    }
+
+                    row = [];
+                    rowArea = 0;
+                }
+            }
+
+            if (row.length > 0) {
+                layoutRowRects(row, rowArea, rect, isWide, results);
+            }
+        }
+
+        function worstRatio(row, area, side) {
+            if (row.length === 0 || area === 0 || side === 0) return Infinity;
+            const rowWidth = area / side;
+            let worst = 0;
+            for (const item of row) {
+                const h = item.normalizedSize / rowWidth;
+                const ratio = Math.max(rowWidth / h, h / rowWidth);
+                worst = Math.max(worst, ratio);
+            }
+            return worst;
+        }
+
+        function layoutRowRects(row, rowArea, rect, isWide, results) {
+            if (row.length === 0) return { usedWidth: 0, usedHeight: 0 };
+
+            const side = isWide ? rect.height : rect.width;
+            const rowThickness = rowArea / side;
+            let offset = 0;
+
+            for (const item of row) {
+                const itemLength = item.normalizedSize / rowThickness;
+                let itemRect;
+
+                if (isWide) {
+                    itemRect = { x: rect.x, y: rect.y + offset, width: rowThickness, height: itemLength };
+                } else {
+                    itemRect = { x: rect.x + offset, y: rect.y, width: itemLength, height: rowThickness };
+                }
+
+                results.push({ item: item.item, rect: itemRect });
+                offset += itemLength;
+            }
+
+            return { usedWidth: isWide ? rowThickness : 0, usedHeight: isWide ? 0 : rowThickness };
+        }
+
+        function renderTreemap(node, container) {
+            container.innerHTML = '';
+            currentNode = node;
+            updateBreadcrumb();
+            updateStats();
+
+            const rect = { x: 0, y: 0, width: container.clientWidth, height: container.clientHeight };
+            const children = node.children || [];
+            if (children.length === 0) return;
+
+            const layouts = squarify(children, rect, c => c.size);
+
+            layouts.forEach((layout, index) => {
+                const { item, rect: r } = layout;
+                if (r.width < 2 || r.height < 2) return;
+
+                const div = document.createElement('div');
+                div.className = 'treemap-rect';
+                div.style.left = r.x + 'px';
+                div.style.top = r.y + 'px';
+                div.style.width = r.width + 'px';
+                div.style.height = r.height + 'px';
+
+                const baseColor = colors[index % colors.length];
+                const hasChildren = item.children && item.children.length > 0;
+
+                div.style.background = hasChildren ? baseColor : lightenColor(baseColor, -10 + (index % 20));
+                div.style.border = '1px solid rgba(0,0,0,0.3)';
+
+                if (r.width > 40 && r.height > 20) {
+                    const label = document.createElement('div');
+                    label.className = 'treemap-label';
+                    label.textContent = item.name;
+                    div.appendChild(label);
+                }
+
+                div.addEventListener('mouseenter', () => {
+                    const tooltip = document.getElementById('tooltip');
+                    const type = hasChildren ? 'Folder' : 'File';
+                    tooltip.innerHTML = `<strong>${item.name}</strong><br>${type}: ${formatBytes(item.size)}<br><small>${item.path}</small>`;
+                    tooltip.style.display = 'block';
+                });
+
+                div.addEventListener('mousemove', (e) => {
+                    const tooltip = document.getElementById('tooltip');
+                    tooltip.style.left = (e.clientX + 15) + 'px';
+                    tooltip.style.top = (e.clientY + 15) + 'px';
+                });
+
+                div.addEventListener('mouseleave', () => {
+                    document.getElementById('tooltip').style.display = 'none';
+                });
+
+                if (hasChildren) {
+                    div.addEventListener('click', () => {
+                        navigationStack.push(currentNode);
+                        renderTreemap(item, container);
+                    });
+                }
+
+                container.appendChild(div);
+            });
+        }
+
+        function lightenColor(hex, amount) {
+            const num = parseInt(hex.slice(1), 16);
+            const r = Math.min(255, Math.max(0, (num >> 16) + amount));
+            const g = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amount));
+            const b = Math.min(255, Math.max(0, (num & 0x0000FF) + amount));
+            return '#' + (0x1000000 + r * 0x10000 + g * 0x100 + b).toString(16).slice(1);
+        }
+
+        function updateBreadcrumb() {
+            const breadcrumb = document.getElementById('breadcrumb');
+            const parts = [`<span onclick="goToRoot()">Root</span>`];
+            navigationStack.forEach((node, i) => {
+                parts.push(` / <span onclick="goToLevel(${i})">${node.name}</span>`);
+            });
+            if (currentNode !== rootData) {
+                parts.push(` / ${currentNode.name}`);
+            }
+            breadcrumb.innerHTML = parts.join('');
+        }
+
+        function updateStats() {
+            const stats = document.getElementById('stats');
+            const count = countItems(currentNode);
+            stats.textContent = `${formatBytes(currentNode.size)} | ${count.files} files, ${count.folders} folders`;
+        }
+
+        function countItems(node) {
+            let files = 0, folders = 0;
+            if (node.children) {
+                folders++;
+                for (const child of node.children) {
+                    const c = countItems(child);
+                    files += c.files;
+                    folders += c.folders;
+                }
+            } else {
+                files = 1;
+            }
+            return { files, folders };
+        }
+
+        function goToRoot() {
+            navigationStack = [];
+            renderTreemap(rootData, document.getElementById('container'));
+        }
+
+        function goToLevel(index) {
+            const node = navigationStack[index];
+            navigationStack = navigationStack.slice(0, index);
+            renderTreemap(node, document.getElementById('container'));
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' || e.key === 'Backspace') {
+                if (navigationStack.length > 0) {
+                    const parent = navigationStack.pop();
+                    renderTreemap(parent, document.getElementById('container'));
+                }
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            if (currentNode) renderTreemap(currentNode, document.getElementById('container'));
+        });
+
+        // Load CBOR+zstd data
+        const loading = document.getElementById('loading');
+
+        async function loadData() {
+            loading.textContent = 'Loading...';
+            const response = await fetch('data.cbor');
+            const compressed = new Uint8Array(await response.arrayBuffer());
+
+            loading.textContent = 'Decompressing...';
+            const decompressed = fzstd.decompress(compressed);
+
+            loading.textContent = 'Parsing...';
+            const data = CBOR.decode(decompressed.buffer);
+
+            const files = data.files.map(f => ({ inode: f[0], size: f[1], path: f[2] }));
+            return { files, rootPath: data.root };
+        }
+
+        loadData()
+            .then(({ files, rootPath }) => {
+                loading.textContent = 'Building tree...';
+                rootData = buildTree(files, rootPath);
+                loading.style.display = 'none';
+                renderTreemap(rootData, document.getElementById('container'));
+            })
+            .catch(err => {
+                loading.textContent = 'Error: ' + err.message + '\n\nRun: python scan_folder.py ~ -o data.cbor';
+            });
+    </script>
+</body>
+</html>
