@@ -48,25 +48,9 @@
             height: calc(100vh - 50px);
             position: relative;
         }
-        .treemap-rect {
-            position: absolute;
-            overflow: hidden;
+        #canvas {
+            display: block;
             cursor: pointer;
-            transition: filter 0.1s;
-        }
-        .treemap-rect:hover { filter: brightness(1.2); }
-        .treemap-label {
-            position: absolute;
-            top: 2px;
-            left: 4px;
-            font-size: 11px;
-            color: rgba(255,255,255,0.9);
-            text-shadow: 0 1px 2px rgba(0,0,0,0.8);
-            pointer-events: none;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            max-width: calc(100% - 8px);
         }
         #loading {
             position: fixed;
@@ -80,6 +64,15 @@
             border-radius: 12px;
             cursor: pointer;
         }
+        #loading #fileInput {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            cursor: pointer;
+        }
         #loading:hover { border-color: #6c9bcf; }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.min.js"></script>
@@ -90,17 +83,23 @@
         <div id="stats"></div>
         <div id="breadcrumb"></div>
     </div>
-    <div id="container"></div>
+    <div id="container">
+        <canvas id="canvas"></canvas>
+    </div>
     <div id="tooltip"></div>
     <div id="loading">
         <div>Drop .json.zst file here</div>
-        <input type="file" id="fileInput" accept=".zst" style="position:absolute;opacity:0;width:100%;height:100%;cursor:pointer;">
+        <input type="file" id="fileInput" accept=".zst">
     </div>
 
     <script>
         let rootData = null;
         let currentNode = null;
         let navigationStack = [];
+        let renderedRects = []; // For hit-testing
+
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
 
         // GrandPerspective "Rainbow" palette (exact colors from source)
         const colors = [
@@ -109,6 +108,12 @@
             '#5240C3', '#8C3FC0', '#D145C1', '#E64C8D',
             '#FF5454', '#FF8054', '#FFA054', '#FFB554'
         ];
+
+        // Pre-parse colors to RGB for faster drawing
+        const colorsRGB = colors.map(hex => {
+            const num = parseInt(hex.slice(1), 16);
+            return [(num >> 16), ((num >> 8) & 0xFF), (num & 0xFF)];
+        });
 
         function formatBytes(bytes) {
             if (bytes === 0) return '0 B';
@@ -270,79 +275,6 @@
             return { usedWidth: isWide ? rowThickness : 0, usedHeight: isWide ? 0 : rowThickness };
         }
 
-        function renderTreemap(node, container) {
-            container.innerHTML = '';
-            currentNode = node;
-            updateBreadcrumb();
-            updateStats();
-
-            const baseRect = { x: 0, y: 0, width: container.clientWidth, height: container.clientHeight };
-            renderNode(node, baseRect, container, 0, null);
-        }
-
-        function renderNode(node, rect, container, depth, parentColor) {
-            const children = node.children || [];
-            if (children.length === 0) return;
-
-            const layouts = squarify(children, rect, c => c.size);
-
-            layouts.forEach((layout, index) => {
-                const { item, rect: r } = layout;
-                // Skip subpixel rectangles
-                if (r.width < 1 || r.height < 1) return;
-
-                const hasChildren = item.children && item.children.length > 0;
-
-                if (hasChildren) {
-                    // Directory: recurse into children
-                    renderNode(item, r, container, depth + 1, null);
-                } else {
-                    // Skip tiny rectangles (performance)
-                    if (r.width < 2 && r.height < 2) return;
-
-                    // Leaf file - render with parent directory's color
-                    const div = document.createElement('div');
-                    div.className = 'treemap-rect';
-                    div.style.left = Math.round(r.x) + 'px';
-                    div.style.top = Math.round(r.y) + 'px';
-                    div.style.width = Math.round(r.width) + 'px';
-                    div.style.height = Math.round(r.height) + 'px';
-
-                    // GrandPerspective cushion gradient: dark top-left to bright bottom-right
-                    const baseColor = parentColor || getColorForExtension(item.name);
-                    const darkColor = adjustBrightness(baseColor, 0.6);  // 60% brightness
-                    const lightColor = adjustBrightness(baseColor, 1.3); // 130% brightness
-                    div.style.background = `linear-gradient(135deg, ${darkColor} 0%, ${lightColor} 100%)`;
-                    div.style.border = '1px solid rgba(0,0,0,0.1)';
-
-                    if (r.width > 30 && r.height > 14) {
-                        const label = document.createElement('div');
-                        label.className = 'treemap-label';
-                        label.textContent = item.name;
-                        div.appendChild(label);
-                    }
-
-                    div.addEventListener('mouseenter', () => {
-                        const tooltip = document.getElementById('tooltip');
-                        tooltip.innerHTML = `<strong>${item.name}</strong><br>${formatBytes(item.size)}<br><small>${item.path}</small>`;
-                        tooltip.style.display = 'block';
-                    });
-
-                    div.addEventListener('mousemove', (e) => {
-                        const tooltip = document.getElementById('tooltip');
-                        tooltip.style.left = (e.clientX + 15) + 'px';
-                        tooltip.style.top = (e.clientY + 15) + 'px';
-                    });
-
-                    div.addEventListener('mouseleave', () => {
-                        document.getElementById('tooltip').style.display = 'none';
-                    });
-
-                    container.appendChild(div);
-                }
-            });
-        }
-
         function hashString(str) {
             let hash = 0;
             for (let i = 0; i < str.length; i++) {
@@ -352,62 +284,141 @@
             return hash;
         }
 
-        function getColorForExtension(name) {
-            // GrandPerspective "extension" mode: hash file extension
+        function getColorIndexForExtension(name) {
             const dot = name.lastIndexOf('.');
             const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
             const hash = Math.abs(hashString(ext));
-            return colors[hash % colors.length];
+            return hash % colors.length;
         }
 
-        // Convert hex to HSB, adjust brightness, convert back to hex
-        // GrandPerspective uses HSB: dark = reduce brightness, light = increase brightness + reduce saturation
-        function adjustBrightness(hex, factor) {
-            const num = parseInt(hex.slice(1), 16);
-            let r = (num >> 16) / 255;
-            let g = ((num >> 8) & 0xFF) / 255;
-            let b = (num & 0xFF) / 255;
+        // Collect all leaf rectangles recursively
+        function collectLeafRects(node, rect, results) {
+            const children = node.children || [];
+            if (children.length === 0) return;
 
-            // RGB to HSB
-            const max = Math.max(r, g, b), min = Math.min(r, g, b);
-            const d = max - min;
-            let h = 0, s = max === 0 ? 0 : d / max, v = max;
+            const layouts = squarify(children, rect, c => c.size);
 
-            if (d !== 0) {
-                if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-                else if (max === g) h = ((b - r) / d + 2) / 6;
-                else h = ((r - g) / d + 4) / 6;
+            for (const layout of layouts) {
+                const { item, rect: r } = layout;
+                if (r.width < 1 || r.height < 1) continue;
+
+                const hasChildren = item.children && item.children.length > 0;
+
+                if (hasChildren) {
+                    collectLeafRects(item, r, results);
+                } else {
+                    if (r.width < 2 && r.height < 2) continue;
+                    const colorIdx = getColorIndexForExtension(item.name);
+                    results.push({ item, x: r.x, y: r.y, w: r.width, h: r.height, colorIdx });
+                }
+            }
+        }
+
+        function renderTreemap(node) {
+            currentNode = node;
+            updateBreadcrumb();
+            updateStats();
+
+            const container = document.getElementById('container');
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+            const dpr = window.devicePixelRatio || 1;
+
+            canvas.width = width * dpr;
+            canvas.height = height * dpr;
+            canvas.style.width = width + 'px';
+            canvas.style.height = height + 'px';
+            ctx.scale(dpr, dpr);
+
+            // Collect all leaf rects
+            renderedRects = [];
+            const baseRect = { x: 0, y: 0, width, height };
+            collectLeafRects(node, baseRect, renderedRects);
+
+            // Draw all rects
+            drawCanvas();
+        }
+
+        function drawCanvas() {
+            const width = canvas.width / (window.devicePixelRatio || 1);
+            const height = canvas.height / (window.devicePixelRatio || 1);
+
+            ctx.fillStyle = '#1a1a2e';
+            ctx.fillRect(0, 0, width, height);
+
+            for (const rect of renderedRects) {
+                const { x, y, w, h, colorIdx } = rect;
+                const [r, g, b] = colorsRGB[colorIdx];
+
+                // Create gradient for cushion effect
+                const gradient = ctx.createLinearGradient(x, y, x + w, y + h);
+                // Dark (60% brightness)
+                const dark = `rgb(${Math.round(r * 0.6)}, ${Math.round(g * 0.6)}, ${Math.round(b * 0.6)})`;
+                // Light (130% brightness, clamped)
+                const light = `rgb(${Math.min(255, Math.round(r * 1.3))}, ${Math.min(255, Math.round(g * 1.3))}, ${Math.min(255, Math.round(b * 1.3))})`;
+                gradient.addColorStop(0, dark);
+                gradient.addColorStop(1, light);
+
+                ctx.fillStyle = gradient;
+                ctx.fillRect(x, y, w, h);
+
+                // Subtle border
+                ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+                ctx.lineWidth = 0.5;
+                ctx.strokeRect(x, y, w, h);
+
+                // Label for larger rects
+                if (w > 40 && h > 16) {
+                    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+                    ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
+                    ctx.shadowColor = 'rgba(0,0,0,0.8)';
+                    ctx.shadowBlur = 2;
+                    ctx.shadowOffsetX = 0;
+                    ctx.shadowOffsetY = 1;
+
+                    const text = rect.item.name;
+                    const maxWidth = w - 8;
+                    let displayText = text;
+                    if (ctx.measureText(text).width > maxWidth) {
+                        while (displayText.length > 3 && ctx.measureText(displayText + '…').width > maxWidth) {
+                            displayText = displayText.slice(0, -1);
+                        }
+                        displayText += '…';
+                    }
+                    ctx.fillText(displayText, x + 4, y + 12);
+                    ctx.shadowBlur = 0;
+                }
+            }
+        }
+
+        // Hit-testing for tooltip
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+
+            // Find hit rect (iterate backwards for z-order, but we draw in order so just find any hit)
+            let hit = null;
+            for (const r of renderedRects) {
+                if (mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h) {
+                    hit = r;
+                }
             }
 
-            // Adjust: factor < 1 = darken (reduce brightness)
-            //         factor > 1 = lighten (increase brightness, reduce saturation)
-            if (factor < 1) {
-                v *= factor;
+            const tooltip = document.getElementById('tooltip');
+            if (hit) {
+                tooltip.innerHTML = `<strong>${hit.item.name}</strong><br>${formatBytes(hit.item.size)}<br><small>${hit.item.path}</small>`;
+                tooltip.style.display = 'block';
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
             } else {
-                v = Math.min(1, v * factor);
-                s *= Math.max(0, 2 - factor); // reduce saturation as we brighten
+                tooltip.style.display = 'none';
             }
+        });
 
-            // HSB to RGB
-            const i = Math.floor(h * 6);
-            const f = h * 6 - i;
-            const p = v * (1 - s);
-            const q = v * (1 - f * s);
-            const t = v * (1 - (1 - f) * s);
-
-            let r2, g2, b2;
-            switch (i % 6) {
-                case 0: r2 = v; g2 = t; b2 = p; break;
-                case 1: r2 = q; g2 = v; b2 = p; break;
-                case 2: r2 = p; g2 = v; b2 = t; break;
-                case 3: r2 = p; g2 = q; b2 = v; break;
-                case 4: r2 = t; g2 = p; b2 = v; break;
-                case 5: r2 = v; g2 = p; b2 = q; break;
-            }
-
-            const toHex = x => Math.round(x * 255).toString(16).padStart(2, '0');
-            return '#' + toHex(r2) + toHex(g2) + toHex(b2);
-        }
+        canvas.addEventListener('mouseleave', () => {
+            document.getElementById('tooltip').style.display = 'none';
+        });
 
         function updateBreadcrumb() {
             const breadcrumb = document.getElementById('breadcrumb');
@@ -444,26 +455,26 @@
 
         function goToRoot() {
             navigationStack = [];
-            renderTreemap(rootData, document.getElementById('container'));
+            renderTreemap(rootData);
         }
 
         function goToLevel(index) {
             const node = navigationStack[index];
             navigationStack = navigationStack.slice(0, index);
-            renderTreemap(node, document.getElementById('container'));
+            renderTreemap(node);
         }
 
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' || e.key === 'Backspace') {
                 if (navigationStack.length > 0) {
                     const parent = navigationStack.pop();
-                    renderTreemap(parent, document.getElementById('container'));
+                    renderTreemap(parent);
                 }
             }
         });
 
         window.addEventListener('resize', () => {
-            if (currentNode) renderTreemap(currentNode, document.getElementById('container'));
+            if (currentNode) renderTreemap(currentNode);
         });
 
         // Load JSON+zstd from file picker
@@ -483,7 +494,7 @@
             loading.innerHTML = '<div>Building tree...</div>';
             rootData = buildTree(files, data.root);
             loading.style.display = 'none';
-            renderTreemap(rootData, document.getElementById('container'));
+            renderTreemap(rootData);
         }
 
         fileInput.addEventListener('change', e => {
