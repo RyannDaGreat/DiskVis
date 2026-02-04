@@ -939,6 +939,52 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     tx: current.panX - rendered.panX * scale,
                     ty: current.panY - rendered.panY * scale
                 };
+            },
+
+            /**
+             * @pure Calculate new CSS transform after zooming towards a point.
+             * localX/localY are cursor position relative to transformed element bounds.
+             * Keeps the point under cursor fixed while scaling.
+             * @example ZoomMath.zoomTransformAtPoint({scale:1, tx:0, ty:0}, 100, 50, 2)
+             *          // => { scale: 2, tx: -100, ty: -50 }
+             * @example ZoomMath.zoomTransformAtPoint({scale:2, tx:-100, ty:-50}, 100, 50, 4)
+             *          // => { scale: 4, tx: -200, ty: -100 }
+             */
+            zoomTransformAtPoint(transform, localX, localY, newScale) {
+                const factor = 1 - newScale / transform.scale;
+                return {
+                    scale: newScale,
+                    tx: transform.tx + localX * factor,
+                    ty: transform.ty + localY * factor
+                };
+            },
+
+            /**
+             * @pure Calculate new CSS transform after panning.
+             * @example ZoomMath.panTransform({scale:1, tx:0, ty:0}, 10, 20)
+             *          // => { scale: 1, tx: -10, ty: -20 }
+             */
+            panTransform(transform, deltaX, deltaY) {
+                return {
+                    scale: transform.scale,
+                    tx: transform.tx - deltaX,
+                    ty: transform.ty - deltaY
+                };
+            },
+
+            /**
+             * @pure Merge CSS transform into viewport state.
+             * @example ZoomMath.commitTransform({zoom:1, panX:0, panY:0}, {scale:2, tx:10, ty:20})
+             *          // => { zoom: 2, panX: 10, panY: 20 }
+             * @example ZoomMath.commitTransform({zoom:2, panX:100, panY:50}, {scale:0.5, tx:-20, ty:-10})
+             *          // => { zoom: 1, panX: 30, panY: 15 }
+             */
+            commitTransform(viewport, transform) {
+                return {
+                    zoom: viewport.zoom * transform.scale,
+                    panX: viewport.panX * transform.scale + transform.tx,
+                    panY: viewport.panY * transform.scale + transform.ty
+                };
             }
         };
 
@@ -952,9 +998,10 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             viewportRedrawTimeout = setTimeout(async () => {
                 if (currentNode) {
                     // Commit CSS transform to Viewport before rendering
-                    Viewport.zoom = Viewport.zoom * cssTransform.scale;
-                    Viewport.panX = Viewport.panX * cssTransform.scale + cssTransform.tx;
-                    Viewport.panY = Viewport.panY * cssTransform.scale + cssTransform.ty;
+                    const committed = ZoomMath.commitTransform(Viewport, cssTransform);
+                    Viewport.zoom = committed.zoom;
+                    Viewport.panX = committed.panX;
+                    Viewport.panY = committed.panY;
                     await renderTreemap(currentNode, null);
                     clearViewportTransform();
                 }
@@ -1030,26 +1077,21 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             if (e.ctrlKey) {
                 // Pinch-to-zoom: update CSS transform (not Viewport)
                 const rect = canvas.getBoundingClientRect();
-                const localX = e.clientX - rect.left;
-                const localY = e.clientY - rect.top;
-
-                // Continuous zoom factor like Pixel-Aligner
                 const zoomFactor = 1 - e.deltaY * 0.01;
                 const newScale = ZoomMath.clampZoom(
                     cssTransform.scale * zoomFactor,
                     Viewport.minZoom / Viewport.zoom,
                     Viewport.maxZoom / Viewport.zoom
                 );
-
-                // Zoom towards cursor: keep point under cursor fixed
-                const factor = 1 - newScale / cssTransform.scale;
-                cssTransform.tx += localX * factor;
-                cssTransform.ty += localY * factor;
-                cssTransform.scale = newScale;
+                cssTransform = ZoomMath.zoomTransformAtPoint(
+                    cssTransform,
+                    e.clientX - rect.left,
+                    e.clientY - rect.top,
+                    newScale
+                );
             } else {
-                // Two-finger pan: update CSS transform (not Viewport)
-                cssTransform.tx -= e.deltaX;
-                cssTransform.ty -= e.deltaY;
+                // Two-finger pan
+                cssTransform = ZoomMath.panTransform(cssTransform, e.deltaX, e.deltaY);
             }
             applyViewportTransform();
             scheduleRedraw();
