@@ -296,8 +296,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             /** Target frames per second for progress updates */
             TARGET_FPS: 120,
 
-            /** Debounce delay for resize redraw (ms) */
-            RESIZE_DEBOUNCE_MS: 250,
+            /** Debounce delay for redraw after resize/pan/zoom (ms) */
+            DEBOUNCE_MS: 150,
 
             /** Only show progress bar if operation takes longer than this (ms) */
             PROGRESS_DELAY_MS: 333,
@@ -992,20 +992,20 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         let touchState = { active: false };
         let viewportRedrawTimeout = null;
 
-        /** Debounced full redraw after interaction */
+        let debounceTimeout = null;
+
+        /** Debounced redraw - resets on every call */
         function scheduleRedraw() {
-            clearTimeout(viewportRedrawTimeout);
-            viewportRedrawTimeout = setTimeout(async () => {
-                if (currentNode) {
-                    // Commit CSS transform to Viewport before rendering
-                    const committed = ZoomMath.commitTransform(Viewport, cssTransform);
-                    Viewport.zoom = committed.zoom;
-                    Viewport.panX = committed.panX;
-                    Viewport.panY = committed.panY;
-                    await renderTreemap(currentNode, null);
-                    clearViewportTransform();
-                }
-            }, Config.RESIZE_DEBOUNCE_MS);
+            clearTimeout(debounceTimeout);
+            debounceTimeout = setTimeout(async () => {
+                if (!currentNode) return;
+                const committed = ZoomMath.commitTransform(Viewport, cssTransform);
+                Viewport.zoom = committed.zoom;
+                Viewport.panX = committed.panX;
+                Viewport.panY = committed.panY;
+                await renderTreemap(currentNode, null);
+                clearViewportTransform();
+            }, Config.DEBOUNCE_MS);
         }
 
         // CSS transform state (applied on top of rendered canvas, reset after full redraw)
@@ -1148,7 +1148,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 ProgressUI.setStage('render', 'done');
                 clearViewportTransform();
                 ProgressUI.hide();
-            }, Config.RESIZE_DEBOUNCE_MS);
+            }, Config.DEBOUNCE_MS);
         });
 
         // Load JSON+zstd from file picker
