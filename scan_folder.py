@@ -62,23 +62,30 @@ import zstandard as zstd
 from rp.r import _ensure_bfs_installed
 
 
-def scan_with_bfs(root: Path, follow_symlinks: bool = False):
+def scan_with_bfs(root: Path, follow_symlinks: bool = False, cross_mounts: bool = False):
     """
     Yield (inode, size, path) tuples using bfs.
+    Size is actual disk usage (blocks * 512), not apparent file size.
     BFS traversal is better for NFS, streams output, includes inodes.
     """
     _ensure_bfs_installed()
     cmd = ['bfs']
     if follow_symlinks:
         cmd.append('-L')
-    cmd.extend([str(root), '-type', 'f', '-printf', '%i\t%s\t%p\n'])
+    cmd.append(str(root))
+    if not cross_mounts:
+        cmd.append('-xdev')
+    cmd.extend(['-type', 'f', '-printf', '%i\t%b\t%p\n'])
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=sys.stderr, text=True)
     for line in proc.stdout:
         line = line.rstrip('\n')
         parts = line.split('\t', 2)
         if len(parts) == 3:
-            yield int(parts[0]), int(parts[1]), parts[2]
+            inode = int(parts[0])
+            blocks = int(parts[1])
+            size = blocks * 512  # Convert 512-byte blocks to bytes
+            yield inode, size, parts[2]
     proc.wait()
 
 
@@ -103,7 +110,7 @@ def load_json_zstd(input_path: Path) -> dict:
     return json.loads(zstd.ZstdDecompressor().decompress(compressed))
 
 
-def scan(path: str = "~", output: str = None, follow_symlinks: bool = False):
+def scan(path: str = "~", output: str = None, follow_symlinks: bool = False, cross_mounts: bool = False):
     """
     Scan a folder and optionally save as JSON + zstd.
 
@@ -111,6 +118,7 @@ def scan(path: str = "~", output: str = None, follow_symlinks: bool = False):
         path: Path to scan.
         output: Output file (.json.zst).
         follow_symlinks: Follow symbolic links.
+        cross_mounts: Cross filesystem boundaries (default stays on starting mount).
     """
     target = Path(path).expanduser().resolve()
     print(f"Scanning {target}...", file=sys.stderr)
@@ -118,7 +126,7 @@ def scan(path: str = "~", output: str = None, follow_symlinks: bool = False):
     files = []
     total_size = 0
 
-    for inode, size, fpath in scan_with_bfs(target, follow_symlinks=follow_symlinks):
+    for inode, size, fpath in scan_with_bfs(target, follow_symlinks=follow_symlinks, cross_mounts=cross_mounts):
         files.append([inode, size, fpath])
         if len(files) % 10000 == 0:
             print(f"  {len(files):,} files, {total_size / 1e9:.1f} GB...", file=sys.stderr)

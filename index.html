@@ -450,9 +450,22 @@
             const data = JSON.parse(text);
             const files = data.files.map(f => ({ inode: f[0], size: f[1], path: f[2] }));
 
-            loading.innerHTML = `<div>Building tree (${files.length.toLocaleString()} files)...</div>`;
+            loading.innerHTML = `<div>Deduplicating ${files.length.toLocaleString()} files...</div>`;
             await new Promise(r => setTimeout(r, 0));
-            rootData = buildTree(files, data.root);
+
+            // Dedupe by inode - keep shorter path (avoids firmlink duplicates)
+            const byInode = new Map();
+            for (const f of files) {
+                const existing = byInode.get(f.inode);
+                if (!existing || f.path.length < existing.path.length) {
+                    byInode.set(f.inode, f);
+                }
+            }
+            const uniqueFiles = Array.from(byInode.values());
+
+            loading.innerHTML = `<div>Building tree (${uniqueFiles.length.toLocaleString()} unique files)...</div>`;
+            await new Promise(r => setTimeout(r, 0));
+            rootData = buildTree(uniqueFiles, data.root);
             loading.style.display = 'none';
             renderTreemap(rootData);
         }
