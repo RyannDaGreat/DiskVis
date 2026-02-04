@@ -240,6 +240,21 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             LABEL_MIN_WIDTH: 40,
             LABEL_MIN_HEIGHT: 16,
 
+            /** Label positioning */
+            LABEL_PADDING_X: 4,
+            LABEL_PADDING_Y: 12,
+
+            /** Stroke width for rectangle borders */
+            STROKE_WIDTH: 0.5,
+
+            /** GrandPerspective "Rainbow" palette (exact colors from source) */
+            COLORS: [
+                '#FFFF54', '#C8E64C', '#8CD466', '#4DC742',
+                '#45D2B0', '#46ACD3', '#438CCB', '#4262C7',
+                '#5240C3', '#8C3FC0', '#D145C1', '#E64C8D',
+                '#FF5454', '#FF8054', '#FFA054', '#FFB554'
+            ],
+
             /** Directory names/extensions treated as opaque units */
             OPAQUE_DIRECTORIES: [
                 // macOS packages
@@ -283,19 +298,21 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             }
         };
 
-        // GrandPerspective "Rainbow" palette (exact colors from source)
-        const colors = [
-            '#FFFF54', '#C8E64C', '#8CD466', '#4DC742',
-            '#45D2B0', '#46ACD3', '#438CCB', '#4262C7',
-            '#5240C3', '#8C3FC0', '#D145C1', '#E64C8D',
-            '#FF5454', '#FF8054', '#FFA054', '#FFB554'
-        ];
-
         // Pre-parse colors to RGB for faster drawing
-        const colorsRGB = colors.map(hex => {
+        const colorsRGB = Config.COLORS.map(hex => {
             const num = parseInt(hex.slice(1), 16);
             return [(num >> 16), ((num >> 8) & 0xFF), (num & 0xFF)];
         });
+
+        /**
+         * @pure
+         * Get the total render scale (internal scale × device pixel ratio).
+         * @returns {number}
+         * @example getRenderScale() // => 4 (on 2x retina with RENDER_SCALE=2)
+         */
+        function getRenderScale() {
+            return Config.RENDER_SCALE * (window.devicePixelRatio || 1);
+        }
 
         /**
          * @pure
@@ -550,11 +567,18 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             const dot = name.lastIndexOf('.');
             const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
             const hash = Math.abs(hashString(ext));
-            return hash % colors.length;
+            return hash % Config.COLORS.length;
         }
 
         // Collect all leaf rectangles recursively
+        /**
+         * Collect leaf rectangles and store bounds on all nodes for hit testing.
+         * Mutates nodes by adding `bounds` property.
+         */
         function collectLeafRects(node, rect, results) {
+            // Store bounds on this node for tree-based hit testing
+            node.bounds = rect;
+
             const children = node.children || [];
             if (children.length === 0) return;
 
@@ -567,10 +591,44 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 if (hasChildren) {
                     collectLeafRects(item, r, results);
                 } else {
+                    item.bounds = r;  // Store bounds on leaf too
                     const colorIdx = getColorIndexForExtension(item.name);
                     results.push({ item, x: r.x, y: r.y, w: r.width, h: r.height, colorIdx });
                 }
             }
+        }
+
+        /**
+         * @pure
+         * Hit test a point against the tree, returning the leaf node at that position.
+         * Uses tree traversal O(depth) instead of iterating all rects O(n).
+         * @param {Object} node - Tree node with bounds and children
+         * @param {number} x - X coordinate
+         * @param {number} y - Y coordinate
+         * @returns {Object|null} Leaf node at position, or null if none
+         * @example hitTestTree(root, 100, 100) // => { name: 'file.txt', ... }
+         */
+        function hitTestTree(node, x, y) {
+            if (!node || !node.bounds) return null;
+
+            const b = node.bounds;
+            // Check if point is within this node's bounds
+            if (x < b.x || x >= b.x + b.width || y < b.y || y >= b.y + b.height) {
+                return null;
+            }
+
+            // If leaf node, return it
+            if (!node.children || node.children.length === 0) {
+                return node;
+            }
+
+            // Search children
+            for (const child of node.children) {
+                const hit = hitTestTree(child, x, y);
+                if (hit) return hit;
+            }
+
+            return null;
         }
 
         async function renderTreemap(node, onProgress) {
@@ -580,7 +638,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             const container = document.getElementById('container');
             const cssWidth = container.clientWidth;
             const cssHeight = container.clientHeight;
-            const scale = Config.RENDER_SCALE * (window.devicePixelRatio || 1);
+            const scale = getRenderScale();
 
             canvas.width = cssWidth * scale;
             canvas.height = cssHeight * scale;
@@ -598,7 +656,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         }
 
         async function drawCanvas(onProgress) {
-            const scale = Config.RENDER_SCALE * (window.devicePixelRatio || 1);
+            const scale = getRenderScale();
             const width = canvas.width / scale;
             const height = canvas.height / scale;
 
@@ -634,7 +692,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 // Border for larger rects
                 if (RenderTier.hasStroke(w * Config.RENDER_SCALE, h * Config.RENDER_SCALE)) {
                     ctx.strokeStyle = 'rgba(0,0,0,0.15)';
-                    ctx.lineWidth = 0.5;
+                    ctx.lineWidth = Config.STROKE_WIDTH;
                     ctx.strokeRect(x, y, w, h);
                 }
 
@@ -648,7 +706,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     ctx.shadowOffsetY = 1;
 
                     const text = rect.item.name;
-                    const maxWidth = w - 8;
+                    const maxWidth = w - Config.LABEL_PADDING_X * 2;
                     let displayText = text;
                     if (ctx.measureText(text).width > maxWidth) {
                         while (displayText.length > 3 && ctx.measureText(displayText + '…').width > maxWidth) {
@@ -656,7 +714,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                         }
                         displayText += '…';
                     }
-                    ctx.fillText(displayText, x + 4, y + 12);
+                    ctx.fillText(displayText, x + Config.LABEL_PADDING_X, y + Config.LABEL_PADDING_Y);
                     ctx.shadowBlur = 0;
                 }
 
@@ -674,17 +732,12 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             const mx = e.clientX - rect.left;
             const my = e.clientY - rect.top;
 
-            // Find hit rect (iterate backwards for z-order, but we draw in order so just find any hit)
-            let hit = null;
-            for (const r of renderedRects) {
-                if (mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h) {
-                    hit = r;
-                }
-            }
+            // Tree-based hit test: O(depth) instead of O(n)
+            const hit = currentNode ? hitTestTree(currentNode, mx, my) : null;
 
             const tooltip = document.getElementById('tooltip');
             if (hit) {
-                tooltip.innerHTML = `<strong>${hit.item.name}</strong><br>${formatBytes(hit.item.size)}<br><small>${hit.item.path}</small>`;
+                tooltip.innerHTML = `<strong>${hit.name}</strong><br>${formatBytes(hit.size)}<br><small>${hit.path}</small>`;
                 tooltip.style.display = 'block';
                 tooltip.style.left = (e.clientX + 15) + 'px';
                 tooltip.style.top = (e.clientY + 15) + 'px';
@@ -756,15 +809,14 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             /** Phase ranges as [start%, end%] of overall progress */
             PHASES: {
                 read: [0, 5],
-                decompress: [5, 10],
-                parse: [10, 50],
+                parse: [5, 50],
                 tree: [50, 80],
                 render: [80, 100]
             },
 
             /**
              * Calculate overall percentage from phase and step progress.
-             * @param {string} phase - Phase name (read|decompress|parse|tree|render)
+             * @param {string} phase - Phase name (read|parse|tree|render)
              * @param {number} stepPercent - Progress within phase (0-100)
              * @returns {number} Overall progress (0-100)
              * @example Progress.calcOverall('parse', 50) // => 30
