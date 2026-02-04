@@ -238,15 +238,15 @@
          * Determine render tier for a rectangle based on its area.
          * @param {number} width - Rect width in pixels
          * @param {number} height - Rect height in pixels
-         * @returns {'full'|'solid'|'skip'} Render tier
+         * @returns {'full'|'solid'|'dot'} Render tier
          * @example RenderTier.get(100, 100) // => 'full'
          * @example RenderTier.get(5, 5) // => 'solid'
-         * @example RenderTier.get(0.5, 0.5) // => 'skip'
+         * @example RenderTier.get(0.5, 0.5) // => 'dot'
          */
         const RenderTier = {
             get(width, height) {
                 const area = width * height;
-                if (area < Config.MIN_DRAW_AREA) return 'skip';
+                if (area < Config.MIN_DRAW_AREA) return 'dot';
                 if (area < Config.GRADIENT_MIN_AREA) return 'solid';
                 return 'full';
             },
@@ -542,27 +542,41 @@
         }
 
         async function drawCanvas(onProgress) {
-            const width = canvas.width / (window.devicePixelRatio || 1);
-            const height = canvas.height / (window.devicePixelRatio || 1);
+            const dpr = window.devicePixelRatio || 1;
+            const width = canvas.width / dpr;
+            const height = canvas.height / dpr;
+            const dotSize = 1 / dpr;  // True 1 device pixel
 
             ctx.fillStyle = '#1a1a2e';
             ctx.fillRect(0, 0, width, height);
 
             const total = renderedRects.length;
-            let drawn = 0, skipped = 0;
+            let drawn = 0, dots = 0, skipped = 0;
+            let lastDotX = -1, lastDotY = -1;
 
             for (let i = 0; i < renderedRects.length; i++) {
                 const rect = renderedRects[i];
                 const { x, y, w, h, colorIdx } = rect;
-
+                const [r, g, b] = colorsRGB[colorIdx];
                 const tier = RenderTier.get(w, h);
-                if (tier === 'skip') {
-                    skipped++;
+
+                if (tier === 'dot') {
+                    const px = x | 0, py = y | 0;
+                    // Skip if same pixel as last dot
+                    if (px === lastDotX && py === lastDotY) {
+                        skipped++;
+                        continue;
+                    }
+                    lastDotX = px;
+                    lastDotY = py;
+                    ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                    ctx.fillRect(px, py, dotSize, dotSize);
+                    drawn++;
+                    dots++;
                     continue;
                 }
 
                 drawn++;
-                const [r, g, b] = colorsRGB[colorIdx];
 
                 if (tier === 'full') {
                     // Full render: gradient + stroke + label
@@ -609,11 +623,11 @@
                 }
 
                 if (onProgress) {
-                    await onProgress(i, total, drawn, skipped);
+                    await onProgress(i, total, drawn, dots, skipped);
                 }
             }
 
-            return { drawn, skipped };
+            return { drawn, dots, skipped };
         }
 
         // Hit-testing for tooltip
@@ -864,11 +878,14 @@
             // Stage 4: Render
             ProgressUI.setStage('render', 'active');
             ProgressUI.setInfo('');
-            const renderStats = await renderTreemap(rootData, async (i, total, drawn, skipped) => {
+            await renderTreemap(rootData, async (i, total, drawn, dots, skipped) => {
                 if (Progress.shouldYield(lastYield)) {
                     const pct = Progress.calcStep(i, total);
+                    const info = [];
+                    if (dots > 0) info.push(`${dots.toLocaleString()} dots`);
+                    if (skipped > 0) info.push(`${skipped.toLocaleString()} skipped`);
                     ProgressUI.setProgress(`Drawing ${drawn.toLocaleString()} rectangles`, pct);
-                    if (skipped > 0) ProgressUI.setInfo(`${skipped.toLocaleString()} tiny files simplified`);
+                    ProgressUI.setInfo(info.join(', '));
                     lastYield = await Progress.yieldFrame();
                 }
             });
