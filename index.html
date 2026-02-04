@@ -1,3 +1,15 @@
+<!--
+MANDATORY STANDARDS - All contributors must follow these rules.
+
+1. CSS: Inheritance over duplication - Never rewrite styles, compose classes instead
+2. JS: Pure functions - No side effects, marked with @pure, with docstrings and examples
+3. No silent failures - Errors must fail loudly, never swallow exceptions
+4. Config in one place - All constants consolidated, not scattered
+5. Composition over inheritance - Build from small reusable pieces
+6. Simplicity - Minimal structure now, expand as needed, no over-engineering
+7. Performance with UX - 120fps target, time-based yielding not hardcoded batches
+8. Same pathway, less code - Reuse code paths with configuration, not duplication
+-->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -223,7 +235,24 @@
 
             /** Minimum dimensions for text label */
             LABEL_MIN_WIDTH: 40,
-            LABEL_MIN_HEIGHT: 16
+            LABEL_MIN_HEIGHT: 16,
+
+            /** Directory names/extensions treated as opaque units */
+            OPAQUE_DIRECTORIES: [
+                // macOS packages
+                '.app', '.bundle', '.framework', '.plugin', '.kext',
+                '.prefPane', '.qlgenerator', '.saver', '.xpc',
+                '.playground', '.xcodeproj', '.xcworkspace',
+                '.photoslibrary', '.musiclibrary', '.tvlibrary',
+                // Version control
+                '.git', '.svn', '.hg',
+                // Node/JS
+                'node_modules', 'bower_components', '.next', '.nuxt',
+                // Python
+                '__pycache__', '.venv', 'venv', '.tox', '.eggs', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+                // IDEs
+                '.idea', '.vscode'
+            ]
         };
 
         /**
