@@ -49,12 +49,13 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            font-size: 18px;
+            font-size: 16px;
             text-align: center;
-            padding: 60px 80px;
+            padding: 40px 60px;
             border: 2px dashed #444;
             border-radius: 12px;
             cursor: pointer;
+            min-width: 300px;
         }
         #loading #fileInput {
             position: absolute;
@@ -66,6 +67,19 @@
             cursor: pointer;
         }
         #loading:hover { border-color: #6c9bcf; }
+        #loading .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #333;
+            border-radius: 4px;
+            margin-top: 16px;
+            overflow: hidden;
+        }
+        #loading .progress-fill {
+            height: 100%;
+            background: #6c9bcf;
+            border-radius: 4px;
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.min.js"></script>
 </head>
@@ -79,7 +93,8 @@
     </div>
     <div id="tooltip"></div>
     <div id="loading">
-        <div>Drop .json.zst file here</div>
+        <div id="loadingText">Drop .json.zst file here</div>
+        <div class="progress-bar" style="display:none"><div class="progress-fill" style="width:0%"></div></div>
         <input type="file" id="fileInput" accept=".zst">
     </div>
 
@@ -435,37 +450,56 @@
         const loading = document.getElementById('loading');
         const fileInput = document.getElementById('fileInput');
 
+        function setProgress(text, percent) {
+            document.getElementById('loadingText').textContent = text;
+            const bar = loading.querySelector('.progress-bar');
+            const fill = loading.querySelector('.progress-fill');
+            bar.style.display = 'block';
+            fill.style.width = percent + '%';
+        }
+
         async function processFile(file) {
             const sizeMB = (file.size / 1e6).toFixed(1);
-            loading.innerHTML = `<div>Reading ${sizeMB} MB...</div>`;
+            setProgress(`Reading ${sizeMB} MB...`, 5);
+            await new Promise(r => requestAnimationFrame(r));
             const compressed = new Uint8Array(await file.arrayBuffer());
 
-            loading.innerHTML = `<div>Decompressing...</div>`;
-            await new Promise(r => setTimeout(r, 0)); // let UI update
+            setProgress('Decompressing...', 10);
+            await new Promise(r => requestAnimationFrame(r));
             const decompressed = fzstd.decompress(compressed);
-
-            loading.innerHTML = `<div>Parsing ${(decompressed.length / 1e6).toFixed(1)} MB...</div>`;
-            await new Promise(r => setTimeout(r, 0));
             const text = new TextDecoder().decode(decompressed);
-            const data = JSON.parse(text);
-            const files = data.files.map(f => ({ inode: f[0], size: f[1], path: f[2] }));
+            const lines = text.split('\n');
 
-            loading.innerHTML = `<div>Deduplicating ${files.length.toLocaleString()} files...</div>`;
-            await new Promise(r => setTimeout(r, 0));
+            // Parse header (first line)
+            const header = JSON.parse(lines[0]);
+            const totalFiles = header.count || lines.length - 1;
 
-            // Dedupe by inode - keep shorter path (avoids firmlink duplicates)
+            // Parse files progressively with real progress
             const byInode = new Map();
-            for (const f of files) {
-                const existing = byInode.get(f.inode);
-                if (!existing || f.path.length < existing.path.length) {
-                    byInode.set(f.inode, f);
+            const batchSize = 10000;
+            for (let i = 1; i < lines.length; i++) {
+                if (!lines[i]) continue;
+                const f = JSON.parse(lines[i]);
+                const file = { inode: f[0], size: f[1], path: f[2] };
+                // Dedupe by inode - keep shorter path
+                const existing = byInode.get(file.inode);
+                if (!existing || file.path.length < existing.path.length) {
+                    byInode.set(file.inode, file);
+                }
+                if (i % batchSize === 0) {
+                    const pct = 10 + Math.round((i / totalFiles) * 70);
+                    setProgress(`Parsing ${i.toLocaleString()} / ${totalFiles.toLocaleString()} files...`, pct);
+                    await new Promise(r => requestAnimationFrame(r));
                 }
             }
             const uniqueFiles = Array.from(byInode.values());
 
-            loading.innerHTML = `<div>Building tree (${uniqueFiles.length.toLocaleString()} unique files)...</div>`;
-            await new Promise(r => setTimeout(r, 0));
-            rootData = buildTree(uniqueFiles, data.root);
+            setProgress(`Building tree (${uniqueFiles.length.toLocaleString()} files)...`, 85);
+            await new Promise(r => requestAnimationFrame(r));
+            rootData = buildTree(uniqueFiles, header.root);
+
+            setProgress('Rendering...', 95);
+            await new Promise(r => requestAnimationFrame(r));
             loading.style.display = 'none';
             renderTreemap(rootData);
         }

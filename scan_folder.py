@@ -89,25 +89,25 @@ def scan_with_bfs(root: Path, follow_symlinks: bool = False, cross_mounts: bool 
     proc.wait()
 
 
-def save_json_zstd(files: list, output_path: Path, root: str):
-    """Save file list to JSON + zstd compressed format."""
-    data = {
-        'version': 1,
-        'root': root,
-        'timestamp': int(time.time()),
-        'files': files,
-    }
-    compressed = zstd.ZstdCompressor(level=3).compress(json.dumps(data, separators=(',', ':')).encode())
+def save_jsonl_zstd(files: list, output_path: Path, root: str):
+    """Save file list to JSONL + zstd compressed format. First line is header, rest are files."""
+    lines = [json.dumps({'version': 2, 'root': root, 'timestamp': int(time.time()), 'count': len(files)})]
+    lines.extend(json.dumps(f) for f in files)
+    compressed = zstd.ZstdCompressor(level=3).compress('\n'.join(lines).encode())
     with open(output_path, 'wb') as f:
         f.write(compressed)
     return len(compressed)
 
 
-def load_json_zstd(input_path: Path) -> dict:
-    """Load file list from JSON + zstd compressed format."""
+def load_jsonl_zstd(input_path: Path) -> dict:
+    """Load file list from JSONL + zstd compressed format."""
     with open(input_path, 'rb') as f:
         compressed = f.read()
-    return json.loads(zstd.ZstdDecompressor().decompress(compressed))
+    text = zstd.ZstdDecompressor().decompress(compressed).decode()
+    lines = text.split('\n')
+    header = json.loads(lines[0])
+    header['files'] = [json.loads(line) for line in lines[1:] if line]
+    return header
 
 
 def scan(path: str = "~", output: str = None, follow_symlinks: bool = False, cross_mounts: bool = False):
@@ -135,7 +135,7 @@ def scan(path: str = "~", output: str = None, follow_symlinks: bool = False, cro
     print(f"Done: {len(files):,} files, {total_size / 1e9:.2f} GB", file=sys.stderr)
 
     if output:
-        compressed_size = save_json_zstd(files, Path(output), str(target))
+        compressed_size = save_jsonl_zstd(files, Path(output), str(target))
         raw_estimate = len(files) * 50
         ratio = (1 - compressed_size / raw_estimate) * 100 if raw_estimate > 0 else 0
         print(f"Saved: {output} ({compressed_size / 1e6:.2f} MB, ~{ratio:.0f}% compression)", file=sys.stderr)
@@ -144,7 +144,7 @@ def scan(path: str = "~", output: str = None, follow_symlinks: bool = False, cro
 def load(path: str):
     """Load and print stats from a saved scan."""
     print(f"Loading {path}...", file=sys.stderr)
-    data = load_json_zstd(Path(path))
+    data = load_jsonl_zstd(Path(path))
     files = data['files']
     print(f"Root: {data['root']}", file=sys.stderr)
     print(f"Scanned: {time.ctime(data['timestamp'])}", file=sys.stderr)
