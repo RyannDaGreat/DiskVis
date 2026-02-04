@@ -4,7 +4,8 @@ Disk scanner using bfs, saves as JSON + zstd.
 
 Usage:
     python scan_folder.py /path/to/scan                   # scan and print stats
-    python scan_folder.py /path/to/scan -o scan.json.zst  # scan and save to file
+    python scan_folder.py /path/to/scan -o scan.json.zst  # scan and save
+    python scan_folder.py /path/to/scan -L                # follow symlinks
     python scan_folder.py -f scan.json.zst                # load and print stats
 
 Requires: bfs (brew install bfs / apt install bfs)
@@ -61,21 +62,16 @@ import zstandard as zstd
 from rp.r import _ensure_bfs_installed
 
 
-def scan_with_bfs(root: Path, skip_hidden: bool = True):
+def scan_with_bfs(root: Path, follow_symlinks: bool = False):
     """
     Yield (inode, size, path) tuples using bfs.
     BFS traversal is better for NFS, streams output, includes inodes.
     """
     _ensure_bfs_installed()
-    cmd = ['bfs', str(root), '-type', 'f', '-printf', '%i\t%s\t%p\n']
-    if skip_hidden:
-        cmd.insert(2, '-name')
-        cmd.insert(3, '.*')
-        cmd.insert(4, '-prune')
-        cmd.insert(5, '-o')
-        cmd.append('-print')
-        # Rebuild: bfs ROOT -name '.*' -prune -o -type f -printf '...' -print
-        cmd = ['bfs', str(root), '-name', '.*', '-prune', '-o', '-type', 'f', '-printf', '%i\t%s\t%p\n']
+    cmd = ['bfs']
+    if follow_symlinks:
+        cmd.append('-L')
+    cmd.extend([str(root), '-type', 'f', '-printf', '%i\t%s\t%p\n'])
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=sys.stderr, text=True)
     for line in proc.stdout:
@@ -112,7 +108,7 @@ def main():
     parser.add_argument('path', nargs='?', help='Path to scan')
     parser.add_argument('-o', '--output', help='Output file (.json.zst)')
     parser.add_argument('-f', '--file', help='Load from file instead of scanning')
-    parser.add_argument('-a', '--all', action='store_true', help='Include hidden files')
+    parser.add_argument('-L', '--follow-symlinks', action='store_true', help='Follow symlinks')
     args = parser.parse_args()
 
     if args.file:
@@ -133,7 +129,7 @@ def main():
     count = 0
     total_size = 0
 
-    for inode, size, path in scan_with_bfs(target, skip_hidden=not args.all):
+    for inode, size, path in scan_with_bfs(target, follow_symlinks=args.follow_symlinks):
         files.append([inode, size, path])
         count += 1
         total_size += size

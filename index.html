@@ -22,14 +22,6 @@
         }
         #header h1 { font-size: 18px; font-weight: 500; }
         #stats { font-size: 13px; color: #888; }
-        #breadcrumb {
-            font-size: 13px;
-            color: #888;
-            flex: 1;
-            text-align: right;
-        }
-        #breadcrumb span { cursor: pointer; color: #6c9bcf; }
-        #breadcrumb span:hover { text-decoration: underline; }
         #tooltip {
             position: fixed;
             background: rgba(0,0,0,0.9);
@@ -81,7 +73,6 @@
     <div id="header">
         <h1>Disk Space Visualization</h1>
         <div id="stats"></div>
-        <div id="breadcrumb"></div>
     </div>
     <div id="container">
         <canvas id="canvas"></canvas>
@@ -95,8 +86,7 @@
     <script>
         let rootData = null;
         let currentNode = null;
-        let navigationStack = [];
-        let renderedRects = []; // For hit-testing
+        let renderedRects = [];
 
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
@@ -316,7 +306,6 @@
 
         function renderTreemap(node) {
             currentNode = node;
-            updateBreadcrumb();
             updateStats();
 
             const container = document.getElementById('container');
@@ -420,18 +409,6 @@
             document.getElementById('tooltip').style.display = 'none';
         });
 
-        function updateBreadcrumb() {
-            const breadcrumb = document.getElementById('breadcrumb');
-            const parts = [`<span onclick="goToRoot()">Root</span>`];
-            navigationStack.forEach((node, i) => {
-                parts.push(` / <span onclick="goToLevel(${i})">${node.name}</span>`);
-            });
-            if (currentNode !== rootData) {
-                parts.push(` / ${currentNode.name}`);
-            }
-            breadcrumb.innerHTML = parts.join('');
-        }
-
         function updateStats() {
             const stats = document.getElementById('stats');
             const count = countItems(currentNode);
@@ -452,26 +429,6 @@
             }
             return { files, folders };
         }
-
-        function goToRoot() {
-            navigationStack = [];
-            renderTreemap(rootData);
-        }
-
-        function goToLevel(index) {
-            const node = navigationStack[index];
-            navigationStack = navigationStack.slice(0, index);
-            renderTreemap(node);
-        }
-
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' || e.key === 'Backspace') {
-                if (navigationStack.length > 0) {
-                    const parent = navigationStack.pop();
-                    renderTreemap(parent);
-                }
-            }
-        });
 
         window.addEventListener('resize', () => {
             if (currentNode) renderTreemap(currentNode);
