@@ -211,6 +211,57 @@
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
 
+        /**
+         * Config - All rendering constants in one place.
+         * Used by pure functions for threshold decisions.
+         */
+        const Config = {
+            /** Target frames per second for progress updates */
+            TARGET_FPS: 120,
+
+            /** Minimum rect area (px²) to draw at all. Below this, rect is skipped. */
+            MIN_DRAW_AREA: 1,
+
+            /** Minimum area (px²) for gradient rendering. Below this, solid color only. */
+            GRADIENT_MIN_AREA: 64,  // 8x8
+
+            /** Minimum area (px²) for stroke/border. Below this, no border. */
+            STROKE_MIN_AREA: 16,    // 4x4
+
+            /** Minimum dimensions for text label */
+            LABEL_MIN_WIDTH: 40,
+            LABEL_MIN_HEIGHT: 16
+        };
+
+        /**
+         * @pure
+         * Determine render tier for a rectangle based on its area.
+         * @param {number} width - Rect width in pixels
+         * @param {number} height - Rect height in pixels
+         * @returns {'full'|'solid'|'skip'} Render tier
+         * @example RenderTier.get(100, 100) // => 'full'
+         * @example RenderTier.get(5, 5) // => 'solid'
+         * @example RenderTier.get(0.5, 0.5) // => 'skip'
+         */
+        const RenderTier = {
+            get(width, height) {
+                const area = width * height;
+                if (area < Config.MIN_DRAW_AREA) return 'skip';
+                if (area < Config.GRADIENT_MIN_AREA) return 'solid';
+                return 'full';
+            },
+
+            /** @pure Check if rect should have stroke */
+            hasStroke(width, height) {
+                return width * height >= Config.STROKE_MIN_AREA;
+            },
+
+            /** @pure Check if rect can fit a label */
+            hasLabel(width, height) {
+                return width >= Config.LABEL_MIN_WIDTH && height >= Config.LABEL_MIN_HEIGHT;
+            }
+        };
+
         // GrandPerspective "Rainbow" palette (exact colors from source)
         const colors = [
             '#FFFF54', '#C8E64C', '#8CD466', '#4DC742',
@@ -487,7 +538,7 @@
             collectLeafRects(node, baseRect, renderedRects);
 
             // Draw all rects with progress
-            await drawCanvas(onProgress);
+            return await drawCanvas(onProgress);
         }
 
         async function drawCanvas(onProgress) {
@@ -498,29 +549,45 @@
             ctx.fillRect(0, 0, width, height);
 
             const total = renderedRects.length;
+            let drawn = 0, skipped = 0;
 
             for (let i = 0; i < renderedRects.length; i++) {
                 const rect = renderedRects[i];
                 const { x, y, w, h, colorIdx } = rect;
+
+                const tier = RenderTier.get(w, h);
+                if (tier === 'skip') {
+                    skipped++;
+                    continue;
+                }
+
+                drawn++;
                 const [r, g, b] = colorsRGB[colorIdx];
 
-                // Create gradient for cushion effect
-                const gradient = ctx.createLinearGradient(x, y, x + w, y + h);
-                const dark = `rgb(${Math.round(r * 0.6)}, ${Math.round(g * 0.6)}, ${Math.round(b * 0.6)})`;
-                const light = `rgb(${Math.min(255, Math.round(r * 1.3))}, ${Math.min(255, Math.round(g * 1.3))}, ${Math.min(255, Math.round(b * 1.3))})`;
-                gradient.addColorStop(0, dark);
-                gradient.addColorStop(1, light);
+                if (tier === 'full') {
+                    // Full render: gradient + stroke + label
+                    const gradient = ctx.createLinearGradient(x, y, x + w, y + h);
+                    const dark = `rgb(${Math.round(r * 0.6)}, ${Math.round(g * 0.6)}, ${Math.round(b * 0.6)})`;
+                    const light = `rgb(${Math.min(255, Math.round(r * 1.3))}, ${Math.min(255, Math.round(g * 1.3))}, ${Math.min(255, Math.round(b * 1.3))})`;
+                    gradient.addColorStop(0, dark);
+                    gradient.addColorStop(1, light);
+                    ctx.fillStyle = gradient;
+                } else {
+                    // Solid render: just the base color
+                    ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                }
 
-                ctx.fillStyle = gradient;
                 ctx.fillRect(x, y, w, h);
 
-                // Subtle border
-                ctx.strokeStyle = 'rgba(0,0,0,0.15)';
-                ctx.lineWidth = 0.5;
-                ctx.strokeRect(x, y, w, h);
+                // Border for larger rects
+                if (RenderTier.hasStroke(w, h)) {
+                    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+                    ctx.lineWidth = 0.5;
+                    ctx.strokeRect(x, y, w, h);
+                }
 
-                // Label for larger rects
-                if (w > 40 && h > 16) {
+                // Label for largest rects
+                if (RenderTier.hasLabel(w, h)) {
                     ctx.fillStyle = 'rgba(255,255,255,0.9)';
                     ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
                     ctx.shadowColor = 'rgba(0,0,0,0.8)';
@@ -542,9 +609,11 @@
                 }
 
                 if (onProgress) {
-                    await onProgress(i, total);
+                    await onProgress(i, total, drawn, skipped);
                 }
             }
+
+            return { drawn, skipped };
         }
 
         // Hit-testing for tooltip
@@ -616,8 +685,6 @@
          * Progress.shouldYield(lastTime, 120) // => true if 8.3ms elapsed
          */
         const Progress = {
-            TARGET_FPS: 120,
-
             /** Phase ranges as [start%, end%] of overall progress */
             PHASES: {
                 read: [0, 5],
@@ -673,7 +740,7 @@
              * @example Progress.shouldYield(performance.now() - 10) // => true (at 120fps)
              */
             shouldYield(lastYield) {
-                return performance.now() - lastYield >= (1000 / this.TARGET_FPS);
+                return performance.now() - lastYield >= (1000 / Config.TARGET_FPS);
             },
 
             /**
@@ -797,10 +864,11 @@
             // Stage 4: Render
             ProgressUI.setStage('render', 'active');
             ProgressUI.setInfo('');
-            await renderTreemap(rootData, async (done, total) => {
+            const renderStats = await renderTreemap(rootData, async (i, total, drawn, skipped) => {
                 if (Progress.shouldYield(lastYield)) {
-                    const pct = Progress.calcStep(done, total);
-                    ProgressUI.setProgress(`Drawing ${done.toLocaleString()} / ${total.toLocaleString()} rectangles`, pct);
+                    const pct = Progress.calcStep(i, total);
+                    ProgressUI.setProgress(`Drawing ${drawn.toLocaleString()} rectangles`, pct);
+                    if (skipped > 0) ProgressUI.setInfo(`${skipped.toLocaleString()} tiny files simplified`);
                     lastYield = await Progress.yieldFrame();
                 }
             });
