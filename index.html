@@ -219,14 +219,14 @@
             /** Target frames per second for progress updates */
             TARGET_FPS: 120,
 
-            /** Minimum rect area (px²) to draw at all. Below this, rect is skipped. */
-            MIN_DRAW_AREA: 1,
+            /** Internal render scale (2 = render at 2x, display at 1x for more detail) */
+            RENDER_SCALE: 2,
 
             /** Minimum area (px²) for gradient rendering. Below this, solid color only. */
-            GRADIENT_MIN_AREA: 64,  // 8x8
+            GRADIENT_MIN_AREA: 16,  // 4x4 at render scale
 
             /** Minimum area (px²) for stroke/border. Below this, no border. */
-            STROKE_MIN_AREA: 16,    // 4x4
+            STROKE_MIN_AREA: 4,     // 2x2 at render scale
 
             /** Minimum dimensions for text label */
             LABEL_MIN_WIDTH: 40,
@@ -236,19 +236,15 @@
         /**
          * @pure
          * Determine render tier for a rectangle based on its area.
-         * @param {number} width - Rect width in pixels
-         * @param {number} height - Rect height in pixels
-         * @returns {'full'|'solid'|'dot'} Render tier
+         * @param {number} width - Rect width in pixels (at render scale)
+         * @param {number} height - Rect height in pixels (at render scale)
+         * @returns {'full'|'solid'} Render tier
          * @example RenderTier.get(100, 100) // => 'full'
-         * @example RenderTier.get(5, 5) // => 'solid'
-         * @example RenderTier.get(0.5, 0.5) // => 'dot'
+         * @example RenderTier.get(3, 3) // => 'solid'
          */
         const RenderTier = {
             get(width, height) {
-                const area = width * height;
-                if (area < Config.MIN_DRAW_AREA) return 'dot';
-                if (area < Config.GRADIENT_MIN_AREA) return 'solid';
-                return 'full';
+                return width * height >= Config.GRADIENT_MIN_AREA ? 'full' : 'solid';
             },
 
             /** @pure Check if rect should have stroke */
@@ -522,19 +518,19 @@
             updateStats();
 
             const container = document.getElementById('container');
-            const width = container.clientWidth;
-            const height = container.clientHeight;
-            const dpr = window.devicePixelRatio || 1;
+            const cssWidth = container.clientWidth;
+            const cssHeight = container.clientHeight;
+            const scale = Config.RENDER_SCALE * (window.devicePixelRatio || 1);
 
-            canvas.width = width * dpr;
-            canvas.height = height * dpr;
-            canvas.style.width = width + 'px';
-            canvas.style.height = height + 'px';
-            ctx.scale(dpr, dpr);
+            canvas.width = cssWidth * scale;
+            canvas.height = cssHeight * scale;
+            canvas.style.width = cssWidth + 'px';
+            canvas.style.height = cssHeight + 'px';
+            ctx.scale(scale, scale);
 
             // Collect all leaf rects
             renderedRects = [];
-            const baseRect = { x: 0, y: 0, width, height };
+            const baseRect = { x: 0, y: 0, width: cssWidth, height: cssHeight };
             collectLeafRects(node, baseRect, renderedRects);
 
             // Draw all rects with progress
@@ -542,39 +538,21 @@
         }
 
         async function drawCanvas(onProgress) {
-            const dpr = window.devicePixelRatio || 1;
-            const width = canvas.width / dpr;
-            const height = canvas.height / dpr;
-            const dotSize = 1 / dpr;  // True 1 device pixel
+            const scale = Config.RENDER_SCALE * (window.devicePixelRatio || 1);
+            const width = canvas.width / scale;
+            const height = canvas.height / scale;
 
             ctx.fillStyle = '#1a1a2e';
             ctx.fillRect(0, 0, width, height);
 
             const total = renderedRects.length;
-            let drawn = 0, dots = 0, skipped = 0;
-            let lastDotX = -1, lastDotY = -1;
+            let drawn = 0;
 
             for (let i = 0; i < renderedRects.length; i++) {
                 const rect = renderedRects[i];
                 const { x, y, w, h, colorIdx } = rect;
                 const [r, g, b] = colorsRGB[colorIdx];
-                const tier = RenderTier.get(w, h);
-
-                if (tier === 'dot') {
-                    const px = x | 0, py = y | 0;
-                    // Skip if same pixel as last dot
-                    if (px === lastDotX && py === lastDotY) {
-                        skipped++;
-                        continue;
-                    }
-                    lastDotX = px;
-                    lastDotY = py;
-                    ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                    ctx.fillRect(px, py, dotSize, dotSize);
-                    drawn++;
-                    dots++;
-                    continue;
-                }
+                const tier = RenderTier.get(w * Config.RENDER_SCALE, h * Config.RENDER_SCALE);
 
                 drawn++;
 
@@ -594,7 +572,7 @@
                 ctx.fillRect(x, y, w, h);
 
                 // Border for larger rects
-                if (RenderTier.hasStroke(w, h)) {
+                if (RenderTier.hasStroke(w * Config.RENDER_SCALE, h * Config.RENDER_SCALE)) {
                     ctx.strokeStyle = 'rgba(0,0,0,0.15)';
                     ctx.lineWidth = 0.5;
                     ctx.strokeRect(x, y, w, h);
@@ -623,11 +601,11 @@
                 }
 
                 if (onProgress) {
-                    await onProgress(i, total, drawn, dots, skipped);
+                    await onProgress(i, total, drawn);
                 }
             }
 
-            return { drawn, dots, skipped };
+            return { drawn };
         }
 
         // Hit-testing for tooltip
@@ -878,14 +856,11 @@
             // Stage 4: Render
             ProgressUI.setStage('render', 'active');
             ProgressUI.setInfo('');
-            await renderTreemap(rootData, async (i, total, drawn, dots, skipped) => {
+            await renderTreemap(rootData, async (i, total, drawn) => {
                 if (Progress.shouldYield(lastYield)) {
                     const pct = Progress.calcStep(i, total);
-                    const info = [];
-                    if (dots > 0) info.push(`${dots.toLocaleString()} dots`);
-                    if (skipped > 0) info.push(`${skipped.toLocaleString()} skipped`);
-                    ProgressUI.setProgress(`Drawing ${drawn.toLocaleString()} rectangles`, pct);
-                    ProgressUI.setInfo(info.join(', '));
+                    ProgressUI.setProgress(`Drawing ${drawn.toLocaleString()} / ${total.toLocaleString()}`, pct);
+                    ProgressUI.setInfo('');
                     lastYield = await Progress.yieldFrame();
                 }
             });
