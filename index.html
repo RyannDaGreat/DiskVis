@@ -220,7 +220,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
          * SECTION: Pure Math Functions
          * All pure functions - no side effects, testable in isolation.
          * Objects: Viewport, ZoomMath, TouchMath, ColorUtils, Format,
-         *          TreeTraversal, TreeUtils, RenderTier, Progress
+         *          TreeTraversal, TreeUtils, Progress
          * ============================================================ */
 
         /**
@@ -305,20 +305,11 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             /** Target frames per second for progress updates */
             TARGET_FPS: 120,
 
-            /** Debounce delay for redraw after resize/pan/zoom (ms) */
-            DEBOUNCE_MS: 150,
-
             /** Only show progress bar if operation takes longer than this (ms) */
             PROGRESS_DELAY_MS: 333,
 
             /** Internal render scale (2 = render at 2x, display at 1x for more detail) */
             RENDER_SCALE: 2,
-
-            /** Minimum area (px²) for gradient rendering. Below this, solid color only. */
-            GRADIENT_MIN_AREA: 16,  // 4x4 at render scale
-
-            /** Minimum area (px²) for stroke/border. Below this, no border. */
-            STROKE_MIN_AREA: 4,     // 2x2 at render scale
 
             /** Minimum dimensions for text label */
             LABEL_MIN_WIDTH: 40,
@@ -327,12 +318,6 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             /** Label positioning */
             LABEL_PADDING_X: 4,
             LABEL_PADDING_Y: 12,
-
-            /** Stroke width for rectangle borders */
-            STROKE_WIDTH: 0.5,
-
-            /** Use WebGL renderer (faster) or Canvas2D (more features) */
-            USE_WEBGL: true,
 
             /** GrandPerspective "Rainbow" palette (exact colors from source) */
             COLORS: [
@@ -358,31 +343,6 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 // IDEs
                 '.idea', '.vscode'
             ]
-        };
-
-        /**
-         * @pure
-         * Determine render tier for a rectangle based on its area.
-         * @param {number} width - Rect width in pixels (at render scale)
-         * @param {number} height - Rect height in pixels (at render scale)
-         * @returns {'full'|'solid'} Render tier
-         * @example RenderTier.get(100, 100) // => 'full'
-         * @example RenderTier.get(3, 3) // => 'solid'
-         */
-        const RenderTier = {
-            get(width, height) {
-                return width * height >= Config.GRADIENT_MIN_AREA ? 'full' : 'solid';
-            },
-
-            /** @pure Check if rect should have stroke */
-            hasStroke(width, height) {
-                return width * height >= Config.STROKE_MIN_AREA;
-            },
-
-            /** @pure Check if rect can fit a label */
-            hasLabel(width, height) {
-                return width >= Config.LABEL_MIN_WIDTH && height >= Config.LABEL_MIN_HEIGHT;
-            }
         };
 
         // Pre-parse colors to RGB for faster drawing
@@ -755,14 +715,12 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 
         /* ============================================================
          * SECTION: Renderer
-         * Canvas2D rendering implementation.
-         * Could be swapped for WebGL for better performance.
+         * WebGL rendering with text overlay on Canvas2D.
          * ============================================================ */
 
         const canvas = document.getElementById('canvas');
         const textCanvas = document.getElementById('textOverlay');
         const textCtx = textCanvas.getContext('2d');
-        let ctx = null;  // Initialized lazily based on renderer choice
 
         let rootData = null;
         let currentNode = null;
@@ -837,7 +795,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             textCtx.shadowBlur = 0;
         }
 
-        async function renderTreemap(node, onProgress) {
+        async function renderTreemap(node) {
             currentNode = node;
             updateStats();
 
@@ -862,111 +820,18 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             const baseRect = { x: 0, y: 0, width: canvasCSSWidth, height: canvasCSSHeight };
             collectLeafRects(node, baseRect, renderedRects);
 
-            if (Config.USE_WEBGL) {
-                // Initialize WebGL on first use
-                if (!webglInitialized) {
-                    WebGLRenderer.init(canvas);
-                    webglInitialized = true;
-                }
-                // Upload rects to GPU
-                WebGLRenderer.setRects(renderedRects);
-                // Render with viewport transform (use CSS dimensions for coordinate space)
-                WebGLRenderer.render(Viewport, canvasCSSWidth, canvasCSSHeight);
-                // Render text labels on overlay
-                renderLabels();
-                return { drawn: renderedRects.length, culled: 0 };
-            } else {
-                // Canvas2D path - init context lazily
-                if (!ctx) ctx = canvas.getContext('2d');
-                ctx.setTransform(scale, 0, 0, scale, 0, 0);
-                return await drawCanvas(onProgress);
+            // Initialize WebGL on first use
+            if (!webglInitialized) {
+                WebGLRenderer.init(canvas);
+                webglInitialized = true;
             }
-        }
-
-        async function drawCanvas(onProgress) {
-            const scale = Format.renderScale();
-            const width = canvas.width / scale;
-            const height = canvas.height / scale;
-            const { zoom, panX, panY } = Viewport;
-
-            ctx.fillStyle = '#1a1a2e';
-            ctx.fillRect(0, 0, width, height);
-
-            const total = renderedRects.length;
-            let drawn = 0, culled = 0;
-
-            for (let i = 0; i < renderedRects.length; i++) {
-                const rect = renderedRects[i];
-                const { x, y, w, h, colorIdx } = rect;
-
-                // Cull rects outside viewport
-                if (!Viewport.isRectVisible(rect, width, height, zoom, panX, panY)) {
-                    culled++;
-                    continue;
-                }
-
-                // Transform to screen coordinates
-                const sx = x * zoom + panX;
-                const sy = y * zoom + panY;
-                const sw = w * zoom;
-                const sh = h * zoom;
-
-                const [r, g, b] = colorsRGB[colorIdx];
-                // Use screen-space dimensions for render tier (zoomed = more detail)
-                const tier = RenderTier.get(sw * Config.RENDER_SCALE, sh * Config.RENDER_SCALE);
-
-                drawn++;
-
-                if (tier === 'full') {
-                    // Full render: gradient + stroke + label
-                    const gradient = ctx.createLinearGradient(sx, sy, sx + sw, sy + sh);
-                    const dark = `rgb(${Math.round(r * 0.6)}, ${Math.round(g * 0.6)}, ${Math.round(b * 0.6)})`;
-                    const light = `rgb(${Math.min(255, Math.round(r * 1.3))}, ${Math.min(255, Math.round(g * 1.3))}, ${Math.min(255, Math.round(b * 1.3))})`;
-                    gradient.addColorStop(0, dark);
-                    gradient.addColorStop(1, light);
-                    ctx.fillStyle = gradient;
-                } else {
-                    // Solid render: just the base color
-                    ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                }
-
-                ctx.fillRect(sx, sy, sw, sh);
-
-                // Border for larger rects
-                if (RenderTier.hasStroke(sw * Config.RENDER_SCALE, sh * Config.RENDER_SCALE)) {
-                    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
-                    ctx.lineWidth = Config.STROKE_WIDTH;
-                    ctx.strokeRect(sx, sy, sw, sh);
-                }
-
-                // Label for largest rects (use screen dimensions)
-                if (RenderTier.hasLabel(sw, sh)) {
-                    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-                    ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
-                    ctx.shadowColor = 'rgba(0,0,0,0.8)';
-                    ctx.shadowBlur = 2;
-                    ctx.shadowOffsetX = 0;
-                    ctx.shadowOffsetY = 1;
-
-                    const text = rect.item.name;
-                    const maxWidth = sw - Config.LABEL_PADDING_X * 2;
-                    let displayText = text;
-                    if (ctx.measureText(text).width > maxWidth) {
-                        while (displayText.length > 3 && ctx.measureText(displayText + '…').width > maxWidth) {
-                            displayText = displayText.slice(0, -1);
-                        }
-                        displayText += '…';
-                    }
-                    ctx.fillText(displayText, sx + Config.LABEL_PADDING_X, sy + Config.LABEL_PADDING_Y);
-                    ctx.shadowBlur = 0;
-                }
-
-                if (onProgress) {
-                    await onProgress(i, total, drawn);
-                }
-            }
-
-            return { drawn, culled };
+            // Upload rects to GPU
+            WebGLRenderer.setRects(renderedRects);
+            // Render with viewport transform
+            WebGLRenderer.render(Viewport, canvasCSSWidth, canvasCSSHeight);
+            // Render text labels on overlay
+            renderLabels();
+            return { drawn: renderedRects.length, culled: 0 };
         }
 
         /**
@@ -1278,118 +1143,22 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     panX: mouseX - worldX * newZoom,
                     panY: mouseY - worldY * newZoom
                 };
-            },
-
-            /**
-             * @pure Calculate CSS transform to show viewport delta without redrawing.
-             * @example ZoomMath.calcCSSTransform({zoom:2, panX:10, panY:20}, {zoom:1, panX:0, panY:0})
-             *          // => { scale: 2, tx: 10, ty: 20 }
-             */
-            calcCSSTransform(current, rendered) {
-                const scale = current.zoom / rendered.zoom;
-                return {
-                    scale,
-                    tx: current.panX - rendered.panX * scale,
-                    ty: current.panY - rendered.panY * scale
-                };
-            },
-
-            /**
-             * @pure Calculate new CSS transform after zooming towards a point.
-             * localX/localY are cursor position relative to transformed element bounds.
-             * Keeps the point under cursor fixed while scaling.
-             * @example ZoomMath.zoomTransformAtPoint({scale:1, tx:0, ty:0}, 100, 50, 2)
-             *          // => { scale: 2, tx: -100, ty: -50 }
-             * @example ZoomMath.zoomTransformAtPoint({scale:2, tx:-100, ty:-50}, 100, 50, 4)
-             *          // => { scale: 4, tx: -200, ty: -100 }
-             */
-            zoomTransformAtPoint(transform, localX, localY, newScale) {
-                const factor = 1 - newScale / transform.scale;
-                return {
-                    scale: newScale,
-                    tx: transform.tx + localX * factor,
-                    ty: transform.ty + localY * factor
-                };
-            },
-
-            /**
-             * @pure Calculate new CSS transform after panning.
-             * @example ZoomMath.panTransform({scale:1, tx:0, ty:0}, 10, 20)
-             *          // => { scale: 1, tx: -10, ty: -20 }
-             */
-            panTransform(transform, deltaX, deltaY) {
-                return {
-                    scale: transform.scale,
-                    tx: transform.tx - deltaX,
-                    ty: transform.ty - deltaY
-                };
-            },
-
-            /**
-             * @pure Merge CSS transform into viewport state.
-             * @example ZoomMath.commitTransform({zoom:1, panX:0, panY:0}, {scale:2, tx:10, ty:20})
-             *          // => { zoom: 2, panX: 10, panY: 20 }
-             * @example ZoomMath.commitTransform({zoom:2, panX:100, panY:50}, {scale:0.5, tx:-20, ty:-10})
-             *          // => { zoom: 1, panX: 30, panY: 15 }
-             */
-            commitTransform(viewport, transform) {
-                return {
-                    zoom: viewport.zoom * transform.scale,
-                    panX: viewport.panX * transform.scale + transform.tx,
-                    panY: viewport.panY * transform.scale + transform.ty
-                };
             }
         };
 
         /* ============================================================
          * SECTION: UI State
-         * Mutable state for interaction tracking and debouncing.
+         * Mutable state for interaction tracking.
          * ============================================================ */
 
         let touchState = { active: false };
-        let debounceTimeout = null;
 
-        /** Fast render for WebGL - just re-renders with current viewport */
+        /** Re-render with current viewport (instant, rects already on GPU) */
         function renderFast() {
-            if (Config.USE_WEBGL && webglInitialized) {
+            if (webglInitialized) {
                 WebGLRenderer.render(Viewport, canvasCSSWidth, canvasCSSHeight);
                 renderLabels();
             }
-        }
-
-        /** Debounced redraw - resets on every call */
-        function scheduleRedraw() {
-            clearTimeout(debounceTimeout);
-            debounceTimeout = setTimeout(async () => {
-                if (!currentNode) return;
-                const committed = ZoomMath.commitTransform(Viewport, cssTransform);
-                Viewport.zoom = committed.zoom;
-                Viewport.panX = committed.panX;
-                Viewport.panY = committed.panY;
-                if (Config.USE_WEBGL) {
-                    // WebGL: just re-render (rects already uploaded)
-                    renderFast();
-                } else {
-                    // Canvas2D: full re-render
-                    await renderTreemap(currentNode, null);
-                }
-                clearViewportTransform();
-            }, Config.DEBOUNCE_MS);
-        }
-
-        // CSS transform state (applied on top of rendered canvas, reset after full redraw)
-        let cssTransform = { scale: 1, tx: 0, ty: 0 };
-
-        /** Apply current CSS transform */
-        function applyViewportTransform() {
-            const { scale, tx, ty } = cssTransform;
-            canvas.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
-        }
-
-        /** Commit CSS transform to Viewport, redraw, then reset transform */
-        function clearViewportTransform() {
-            canvas.style.transform = '';
-            cssTransform = { scale: 1, tx: 0, ty: 0 };
         }
 
         /* ============================================================
@@ -1419,31 +1188,20 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             Viewport.zoom = newState.zoom;
             Viewport.panX = newState.panX;
             Viewport.panY = newState.panY;
-
-            if (Config.USE_WEBGL && webglInitialized) {
-                renderFast();
-            } else {
-                applyViewportTransform();
-            }
+            renderFast();
         }, { passive: false });
 
         canvas.addEventListener('touchend', (e) => {
             if (touchState.active && e.touches.length < 2) {
                 touchState.active = false;
-                // WebGL already rendered at full quality; Canvas2D needs debounced redraw
-                if (!Config.USE_WEBGL) {
-                    scheduleRedraw();
-                }
             }
         });
 
         canvas.addEventListener('dblclick', async () => {
-            if (Viewport.zoom !== 1 || Viewport.panX !== 0 || Viewport.panY !== 0 ||
-                cssTransform.scale !== 1 || cssTransform.tx !== 0 || cssTransform.ty !== 0) {
+            if (Viewport.zoom !== 1 || Viewport.panX !== 0 || Viewport.panY !== 0) {
                 Viewport.reset();
-                clearViewportTransform();
                 if (currentNode) {
-                    await renderTreemap(currentNode, null);
+                    await renderTreemap(currentNode);
                 }
             }
         });
@@ -1456,51 +1214,28 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
 
-            if (Config.USE_WEBGL && webglInitialized) {
-                // WebGL path: update Viewport directly, render instantly
-                if (e.ctrlKey) {
-                    const rect = canvas.getBoundingClientRect();
-                    const zoomFactor = 1 - e.deltaY * 0.01;
-                    const newZoom = ZoomMath.clampZoom(
-                        Viewport.zoom * zoomFactor,
-                        Viewport.minZoom,
-                        Viewport.maxZoom
-                    );
-                    // Zoom towards cursor
-                    const mouseX = e.clientX - rect.left;
-                    const mouseY = e.clientY - rect.top;
-                    const worldX = (mouseX - Viewport.panX) / Viewport.zoom;
-                    const worldY = (mouseY - Viewport.panY) / Viewport.zoom;
-                    Viewport.panX = mouseX - worldX * newZoom;
-                    Viewport.panY = mouseY - worldY * newZoom;
-                    Viewport.zoom = newZoom;
-                } else {
-                    Viewport.panX -= e.deltaX;
-                    Viewport.panY -= e.deltaY;
-                }
-                renderFast();
+            if (e.ctrlKey) {
+                // Pinch-to-zoom: zoom towards cursor
+                const rect = canvas.getBoundingClientRect();
+                const zoomFactor = 1 - e.deltaY * 0.01;
+                const newZoom = ZoomMath.clampZoom(
+                    Viewport.zoom * zoomFactor,
+                    Viewport.minZoom,
+                    Viewport.maxZoom
+                );
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+                const worldX = (mouseX - Viewport.panX) / Viewport.zoom;
+                const worldY = (mouseY - Viewport.panY) / Viewport.zoom;
+                Viewport.panX = mouseX - worldX * newZoom;
+                Viewport.panY = mouseY - worldY * newZoom;
+                Viewport.zoom = newZoom;
             } else {
-                // Canvas2D path: use CSS transform for smooth interaction
-                if (e.ctrlKey) {
-                    const rect = canvas.getBoundingClientRect();
-                    const zoomFactor = 1 - e.deltaY * 0.01;
-                    const newScale = ZoomMath.clampZoom(
-                        cssTransform.scale * zoomFactor,
-                        Viewport.minZoom / Viewport.zoom,
-                        Viewport.maxZoom / Viewport.zoom
-                    );
-                    cssTransform = ZoomMath.zoomTransformAtPoint(
-                        cssTransform,
-                        e.clientX - rect.left,
-                        e.clientY - rect.top,
-                        newScale
-                    );
-                } else {
-                    cssTransform = ZoomMath.panTransform(cssTransform, e.deltaX, e.deltaY);
-                }
-                applyViewportTransform();
-                scheduleRedraw();
+                // Two-finger pan
+                Viewport.panX -= e.deltaX;
+                Viewport.panY -= e.deltaY;
             }
+            renderFast();
         }, { passive: false });
 
         /**
@@ -1539,22 +1274,9 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             if (!currentNode) return;
             clearTimeout(resizeTimeout);
             resizeTimeout = setTimeout(async () => {
-                Viewport.reset();  // Reset zoom on resize since canvas dimensions change
-                canvas.style.transform = '';  // Clear transform immediately
-                ProgressUI.show({ stages: ['render'], showInfo: false });
-                ProgressUI.setStage('render', 'active');
-                let lastYield = performance.now();
-                await renderTreemap(currentNode, async (i, total, drawn) => {
-                    if (Progress.shouldYield(lastYield)) {
-                        const pct = Progress.calcStep(i, total);
-                        ProgressUI.setProgress(`Redrawing ${drawn.toLocaleString()}`, pct);
-                        lastYield = await Progress.yieldFrame();
-                    }
-                });
-                ProgressUI.setStage('render', 'done');
-                clearViewportTransform();
-                ProgressUI.hide();
-            }, Config.DEBOUNCE_MS);
+                Viewport.reset();
+                await renderTreemap(currentNode);
+            }, 150);
         });
 
         // Load JSON+zstd from file picker
@@ -1790,16 +1512,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             // Stage 4: Render
             ProgressUI.setStage('render', 'active');
             ProgressUI.setInfo('');
-            await renderTreemap(rootData, async (i, total, drawn) => {
-                if (Progress.shouldYield(lastYield)) {
-                    const pct = Progress.calcStep(i, total);
-                    ProgressUI.setProgress(`Drawing ${drawn.toLocaleString()} / ${total.toLocaleString()}`, pct);
-                    ProgressUI.setInfo('');
-                    lastYield = await Progress.yieldFrame();
-                }
-            });
+            await renderTreemap(rootData);
             ProgressUI.setStage('render', 'done');
-            clearViewportTransform();
 
             ProgressUI.hide();
         }
