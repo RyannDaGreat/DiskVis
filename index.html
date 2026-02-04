@@ -182,24 +182,7 @@
     <div id="loading" class="glass glass-panel">
         <div class="drop-text">Drop .json.zst file here</div>
         <div class="progress-section">
-            <div class="stages">
-                <div class="stage" id="stage-read">
-                    <div class="stage-bubble"><span class="iconify" data-icon="mdi:file-download-outline"></span></div>
-                    <div class="stage-label">Read</div>
-                </div>
-                <div class="stage" id="stage-parse">
-                    <div class="stage-bubble"><span class="iconify" data-icon="mdi:code-json"></span></div>
-                    <div class="stage-label">Parse</div>
-                </div>
-                <div class="stage" id="stage-tree">
-                    <div class="stage-bubble"><span class="iconify" data-icon="mdi:file-tree-outline"></span></div>
-                    <div class="stage-label">Build</div>
-                </div>
-                <div class="stage" id="stage-render">
-                    <div class="stage-bubble"><span class="iconify" data-icon="mdi:brush-outline"></span></div>
-                    <div class="stage-label">Render</div>
-                </div>
-            </div>
+            <div class="stages" id="stagesContainer"></div>
             <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
             <div class="progress-info">
                 <span id="progressLabel">Loading...</span>
@@ -665,8 +648,20 @@
             return { files, folders };
         }
 
-        window.addEventListener('resize', () => {
-            if (currentNode) renderTreemap(currentNode, null);
+        window.addEventListener('resize', async () => {
+            if (!currentNode) return;
+            ProgressUI.show({ stages: ['render'], showInfo: false });
+            ProgressUI.setStage('render', 'active');
+            let lastYield = performance.now();
+            await renderTreemap(currentNode, async (i, total, drawn) => {
+                if (Progress.shouldYield(lastYield)) {
+                    const pct = Progress.calcStep(i, total);
+                    ProgressUI.setProgress(`Redrawing ${drawn.toLocaleString()}`, pct);
+                    lastYield = await Progress.yieldFrame();
+                }
+            });
+            ProgressUI.setStage('render', 'done');
+            ProgressUI.hide();
         });
 
         // Load JSON+zstd from file picker
@@ -753,16 +748,49 @@
         };
 
         /**
-         * ProgressUI - DOM rendering for progress state.
-         * Separated from pure logic to allow testing/reuse of Progress.
+         * ProgressUI - Configurable progress display.
+         * Call show() with options to configure stages dynamically.
+         *
+         * @example ProgressUI.show({ stages: ['read', 'parse', 'tree', 'render'] })
+         * @example ProgressUI.show({ stages: ['render'], showInfo: false })
          */
         const ProgressUI = {
-            STAGES: ['read', 'parse', 'tree', 'render'],
+            /** Stage definitions: id -> { icon, label } */
+            STAGE_DEFS: {
+                read:   { icon: 'mdi:file-download-outline', label: 'Read' },
+                parse:  { icon: 'mdi:code-json', label: 'Parse' },
+                tree:   { icon: 'mdi:file-tree-outline', label: 'Build' },
+                render: { icon: 'mdi:brush-outline', label: 'Render' }
+            },
 
-            /** Show progress UI, hide drop text */
-            show() {
+            activeStages: [],
+
+            /**
+             * Show progress UI with specified stages.
+             * @param {Object} options
+             * @param {string[]} options.stages - Stage ids to show (default: all)
+             * @param {boolean} options.showInfo - Show info line (default: true)
+             */
+            show({ stages = ['read', 'parse', 'tree', 'render'], showInfo = true } = {}) {
+                this.activeStages = stages;
+                this.buildStages(stages);
+                document.getElementById('progressInfoLine').style.display = showInfo ? '' : 'none';
+                loading.classList.remove('hidden');
                 loading.classList.add('processing');
-                this.resetStages();
+            },
+
+            /** Build stage HTML dynamically */
+            buildStages(stages) {
+                const container = document.getElementById('stagesContainer');
+                container.innerHTML = stages.map(id => {
+                    const def = this.STAGE_DEFS[id];
+                    return `<div class="stage" id="stage-${id}">
+                        <div class="stage-bubble"><span class="iconify" data-icon="${def.icon}"></span></div>
+                        <div class="stage-label">${def.label}</div>
+                    </div>`;
+                }).join('');
+                // Re-scan for new iconify elements
+                if (window.Iconify) Iconify.scan();
             },
 
             /** Hide progress UI with fade-out transition */
@@ -770,24 +798,12 @@
                 loading.classList.add('hidden');
             },
 
-            /** Reset all stages to off state */
-            resetStages() {
-                this.STAGES.forEach(id => {
-                    const el = document.getElementById('stage-' + id);
-                    el.classList.remove('active', 'done');
-                });
-            },
-
-            /**
-             * Set stage state: 'off', 'active', or 'done'
-             * @param {string} stage - Stage id (read|parse|tree|render)
-             * @param {string} state - State (off|active|done)
-             */
+            /** Set stage state: 'active' or 'done' */
             setStage(stage, state) {
                 const el = document.getElementById('stage-' + stage);
+                if (!el) return;
                 el.classList.remove('active', 'done');
-                if (state === 'active') el.classList.add('active');
-                if (state === 'done') el.classList.add('done');
+                if (state === 'active' || state === 'done') el.classList.add(state);
             },
 
             /** Update progress bar */
@@ -797,14 +813,14 @@
                 document.getElementById('progressFill').style.width = percent + '%';
             },
 
-            /** Update info line (context-dependent text) */
+            /** Update info line */
             setInfo(text) {
                 document.getElementById('progressInfoLine').textContent = text || '';
             }
         };
 
         async function processFile(file) {
-            ProgressUI.show();
+            ProgressUI.show({ stages: ['read', 'parse', 'tree', 'render'], showInfo: true });
             let lastYield = performance.now();
 
             // Stage 1: Read
