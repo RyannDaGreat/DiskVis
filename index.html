@@ -102,12 +102,12 @@
         let currentNode = null;
         let navigationStack = [];
 
-        const colors = [
-            '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
-            '#1abc9c', '#e67e22', '#34495e', '#16a085', '#c0392b',
-            '#2980b9', '#27ae60', '#d35400', '#8e44ad', '#f1c40f',
-            '#00bcd4', '#ff5722', '#607d8b', '#795548', '#4caf50'
-        ];
+        // GrandPerspective-style palette (evenly spaced hues, good saturation)
+        const colors = [];
+        for (let i = 0; i < 24; i++) {
+            const hue = (i * 15) % 360; // 24 colors, 15° apart
+            colors.push(`hsl(${hue}, 70%, 50%)`);
+        }
 
         function formatBytes(bytes) {
             if (bytes === 0) return '0 B';
@@ -276,10 +276,10 @@
             updateStats();
 
             const baseRect = { x: 0, y: 0, width: container.clientWidth, height: container.clientHeight };
-            renderNode(node, baseRect, container, 0);
+            renderNode(node, baseRect, container, 0, null);
         }
 
-        function renderNode(node, rect, container, depth) {
+        function renderNode(node, rect, container, depth, parentColor) {
             const children = node.children || [];
             if (children.length === 0) return;
 
@@ -287,27 +287,40 @@
 
             layouts.forEach((layout, index) => {
                 const { item, rect: r } = layout;
+                // Skip subpixel rectangles
                 if (r.width < 1 || r.height < 1) return;
 
                 const hasChildren = item.children && item.children.length > 0;
 
                 if (hasChildren) {
-                    // Recursively render children - no box for directories
-                    renderNode(item, r, container, depth + 1);
+                    // Directory: recurse into children
+                    renderNode(item, r, container, depth + 1, null);
                 } else {
-                    // Leaf file - render colored rectangle
+                    // Skip tiny rectangles (performance)
+                    if (r.width < 2 && r.height < 2) return;
+
+                    // Leaf file - render with parent directory's color
                     const div = document.createElement('div');
                     div.className = 'treemap-rect';
-                    div.style.left = r.x + 'px';
-                    div.style.top = r.y + 'px';
-                    div.style.width = r.width + 'px';
-                    div.style.height = r.height + 'px';
+                    div.style.left = Math.round(r.x) + 'px';
+                    div.style.top = Math.round(r.y) + 'px';
+                    div.style.width = Math.round(r.width) + 'px';
+                    div.style.height = Math.round(r.height) + 'px';
 
-                    // Color based on file extension
-                    const ext = item.name.split('.').pop().toLowerCase();
-                    const color = getColorForExtension(ext);
-                    div.style.background = color;
-                    div.style.border = '1px solid rgba(0,0,0,0.2)';
+                    // GrandPerspective cushion: dark top-left to bright bottom-right
+                    const baseColor = parentColor || getColorForExtension(item.name);
+                    // Parse HSL and create gradient variants
+                    const match = baseColor.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/);
+                    if (match) {
+                        const [_, h, s, l] = match;
+                        const darkL = Math.max(0, l - 20);
+                        const lightL = Math.min(100, parseInt(l) + 20);
+                        const lightS = Math.max(0, s - 20);
+                        div.style.background = `linear-gradient(135deg, hsl(${h},${s}%,${darkL}%) 0%, hsl(${h},${lightS}%,${lightL}%) 100%)`;
+                    } else {
+                        div.style.background = baseColor;
+                    }
+                    div.style.border = '1px solid rgba(0,0,0,0.15)';
 
                     if (r.width > 30 && r.height > 14) {
                         const label = document.createElement('div');
@@ -337,27 +350,21 @@
             });
         }
 
-        function getColorForExtension(ext) {
-            const extColors = {
-                // Images
-                jpg: '#e74c3c', jpeg: '#e74c3c', png: '#c0392b', gif: '#a93226', webp: '#922b21', heic: '#7b241c',
-                // Video
-                mp4: '#9b59b6', mov: '#8e44ad', avi: '#7d3c98', mkv: '#6c3483', m4v: '#5b2c6f',
-                // Audio
-                mp3: '#3498db', wav: '#2980b9', flac: '#1f618d', aac: '#1a5276', m4a: '#154360',
-                // Documents
-                pdf: '#e67e22', doc: '#2ecc71', docx: '#27ae60', xls: '#1abc9c', xlsx: '#16a085',
-                // Code
-                js: '#f1c40f', ts: '#f39c12', py: '#3498db', java: '#e74c3c', cpp: '#9b59b6', c: '#8e44ad',
-                html: '#e67e22', css: '#3498db', json: '#95a5a6', xml: '#7f8c8d',
-                // Archives
-                zip: '#34495e', tar: '#2c3e50', gz: '#1c2833', rar: '#17202a', '7z': '#0b0c0d',
-                // Data
-                db: '#795548', sqlite: '#6d4c41', csv: '#5d4037',
-                // Other
-                txt: '#bdc3c7', md: '#95a5a6', log: '#7f8c8d',
-            };
-            return extColors[ext] || '#607d8b';
+        function hashString(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                hash = ((hash << 5) - hash) + str.charCodeAt(i);
+                hash |= 0;
+            }
+            return hash;
+        }
+
+        function getColorForExtension(name) {
+            // GrandPerspective "extension" mode: hash file extension
+            const dot = name.lastIndexOf('.');
+            const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+            const hash = Math.abs(hashString(ext));
+            return colors[hash % colors.length];
         }
 
         function lightenColor(hex, amount) {
