@@ -209,12 +209,16 @@ MANDATORY STANDARDS - All contributors must follow these rules.
     </div>
 
     <script>
-        let rootData = null;
-        let currentNode = null;
-        let renderedRects = [];
+        /* ============================================================
+         * SECTION: Pure Math Functions
+         * All pure functions - no side effects, testable in isolation.
+         * Objects: Viewport, ZoomMath, TouchMath, ColorUtils, Format,
+         *          TreeTraversal, TreeUtils, RenderTier, Progress
+         * ============================================================ */
 
         /**
-         * Viewport - Pan/zoom state and pure transform functions.
+         * Viewport - Pure transform functions for pan/zoom.
+         * State is stored here but methods are pure.
          */
         const Viewport = {
             zoom: 1,
@@ -285,13 +289,11 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             }
         };
 
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d');
+        /* ============================================================
+         * SECTION: Config
+         * All constants in one place. No logic, just values.
+         * ============================================================ */
 
-        /**
-         * Config - All rendering constants in one place.
-         * Used by pure functions for threshold decisions.
-         */
         const Config = {
             /** Target frames per second for progress updates */
             TARGET_FPS: 120,
@@ -425,7 +427,12 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         }
 
 
-        // Build tree from flat file list (async with progress)
+        /* ============================================================
+         * SECTION: Layout Algorithm
+         * Tree building and squarify treemap layout.
+         * Pure algorithms that produce rect data from tree structure.
+         * ============================================================ */
+
         async function buildTree(files, rootPath, onProgress) {
             const root = { name: rootPath, path: rootPath, size: 0, children: {} };
             const total = files.length;
@@ -700,6 +707,19 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 return null;
             }
         };
+
+        /* ============================================================
+         * SECTION: Renderer
+         * Canvas2D rendering implementation.
+         * Could be swapped for WebGL for better performance.
+         * ============================================================ */
+
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        let rootData = null;
+        let currentNode = null;
+        let renderedRects = [];
 
         async function renderTreemap(node, onProgress) {
             currentNode = node;
@@ -988,10 +1008,12 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             }
         };
 
-        // Touch/zoom state
-        let touchState = { active: false };
-        let viewportRedrawTimeout = null;
+        /* ============================================================
+         * SECTION: UI State
+         * Mutable state for interaction tracking and debouncing.
+         * ============================================================ */
 
+        let touchState = { active: false };
         let debounceTimeout = null;
 
         /** Debounced redraw - resets on every call */
@@ -1023,7 +1045,11 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             cssTransform = { scale: 1, tx: 0, ty: 0 };
         }
 
-        // Touch handlers - thin, delegate to pure functions
+        /* ============================================================
+         * SECTION: Input Handlers
+         * Event listeners - thin wrappers delegating to pure functions.
+         * ============================================================ */
+
         canvas.addEventListener('touchstart', (e) => {
             if (e.touches.length >= 2) {
                 e.preventDefault();
@@ -1317,6 +1343,11 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 document.getElementById('progressInfoLine').textContent = text || '';
             }
         };
+
+        /* ============================================================
+         * SECTION: Main Application
+         * File processing, initialization, and event wiring.
+         * ============================================================ */
 
         async function processFile(file) {
             Viewport.reset();
