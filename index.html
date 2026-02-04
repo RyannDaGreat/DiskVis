@@ -222,7 +222,10 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             TARGET_FPS: 120,
 
             /** Debounce delay for resize redraw (ms) */
-            RESIZE_DEBOUNCE_MS: 500,
+            RESIZE_DEBOUNCE_MS: 250,
+
+            /** Only show progress bar if operation takes longer than this (ms) */
+            PROGRESS_DELAY_MS: 333,
 
             /** Internal render scale (2 = render at 2x, display at 1x for more detail) */
             RENDER_SCALE: 2,
@@ -296,6 +299,23 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 
         /**
          * @pure
+         * Check if a directory name matches an opaque pattern.
+         * Matches exact names (node_modules, .git) or extensions (.app, .framework).
+         * @param {string} name - Directory name
+         * @returns {boolean}
+         * @example isOpaqueDirectory('node_modules') // => true
+         * @example isOpaqueDirectory('MyApp.app') // => true
+         * @example isOpaqueDirectory('.git') // => true
+         * @example isOpaqueDirectory('src') // => false
+         */
+        function isOpaqueDirectory(name) {
+            return Config.OPAQUE_DIRECTORIES.some(pattern =>
+                name === pattern || name.endsWith(pattern)
+            );
+        }
+
+        /**
+         * @pure
          * Format bytes as human-readable string.
          * @param {number} bytes
          * @returns {string}
@@ -325,34 +345,52 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 
                 const parts = relativePath.split('/').filter(p => p);
                 let current = root;
+                let opaqueDepth = -1;  // Track where we hit an opaque directory
 
+                // Find first opaque directory in path
                 for (let j = 0; j < parts.length; j++) {
+                    if (isOpaqueDirectory(parts[j])) {
+                        opaqueDepth = j;
+                        break;
+                    }
+                }
+
+                // Build tree only up to opaque directory (or full path if none)
+                const buildDepth = opaqueDepth >= 0 ? opaqueDepth + 1 : parts.length;
+
+                for (let j = 0; j < buildDepth; j++) {
                     const part = parts[j];
-                    const isFile = j === parts.length - 1;
+                    const isLeaf = j === parts.length - 1 || j === opaqueDepth;
 
                     if (!current.children[part]) {
                         current.children[part] = {
                             name: part,
                             path: rootPath + '/' + parts.slice(0, j + 1).join('/'),
                             size: 0,
-                            children: isFile ? null : {}
+                            children: isLeaf ? null : {}
                         };
                     }
 
-                    if (isFile) {
-                        current.children[part].size = size;
+                    // If this is an opaque dir, ensure it stays a leaf
+                    if (j === opaqueDepth) {
                         current.children[part].children = null;
+                    }
+
+                    // Set leaf size directly (file or opaque dir)
+                    if (isLeaf) {
+                        current.children[part].size += size;
                     }
 
                     current = current.children[part];
                 }
 
-                // Propagate size up
+                // Propagate size up to parents (not leaf)
                 current = root;
-                for (const part of parts) {
+                for (let j = 0; j < buildDepth - 1; j++) {
                     current.size += size;
-                    current = current.children[part];
+                    current = current.children[parts[j]];
                 }
+                current.size += size;  // Add to immediate parent of leaf
 
                 if (onProgress) {
                     await onProgress(i, total, path);
@@ -800,9 +838,11 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             },
 
             activeStages: [],
+            showTimeout: null,
+            isVisible: false,
 
             /**
-             * Show progress UI with specified stages.
+             * Show progress UI with specified stages (after delay threshold).
              * @param {Object} options
              * @param {string[]} options.stages - Stage ids to show (default: all)
              * @param {boolean} options.showInfo - Show info line (default: true)
@@ -811,8 +851,15 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 this.activeStages = stages;
                 this.buildStages(stages);
                 document.getElementById('progressInfoLine').style.display = showInfo ? '' : 'none';
-                loading.classList.remove('hidden');
-                loading.classList.add('processing');
+
+                // Delay showing until threshold reached
+                clearTimeout(this.showTimeout);
+                this.isVisible = false;
+                this.showTimeout = setTimeout(() => {
+                    loading.classList.remove('hidden');
+                    loading.classList.add('processing');
+                    this.isVisible = true;
+                }, Config.PROGRESS_DELAY_MS);
             },
 
             /** Build stage HTML dynamically */
@@ -831,7 +878,11 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 
             /** Hide progress UI with fade-out transition */
             hide() {
-                loading.classList.add('hidden');
+                clearTimeout(this.showTimeout);
+                if (this.isVisible) {
+                    loading.classList.add('hidden');
+                }
+                this.isVisible = false;
             },
 
             /** Set stage state: 'active' or 'done' */
