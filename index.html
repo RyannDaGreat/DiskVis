@@ -290,14 +290,11 @@
 
             for (const layout of layouts) {
                 const { item, rect: r } = layout;
-                if (r.width < 1 || r.height < 1) continue;
-
                 const hasChildren = item.children && item.children.length > 0;
 
                 if (hasChildren) {
                     collectLeafRects(item, r, results);
                 } else {
-                    if (r.width < 2 && r.height < 2) continue;
                     const colorIdx = getColorIndexForExtension(item.name);
                     results.push({ item, x: r.x, y: r.y, w: r.width, h: r.height, colorIdx });
                 }
@@ -439,16 +436,22 @@
         const fileInput = document.getElementById('fileInput');
 
         async function processFile(file) {
-            loading.innerHTML = '<div>Decompressing...</div>';
+            const sizeMB = (file.size / 1e6).toFixed(1);
+            loading.innerHTML = `<div>Reading ${sizeMB} MB...</div>`;
             const compressed = new Uint8Array(await file.arrayBuffer());
+
+            loading.innerHTML = `<div>Decompressing...</div>`;
+            await new Promise(r => setTimeout(r, 0)); // let UI update
             const decompressed = fzstd.decompress(compressed);
 
-            loading.innerHTML = '<div>Parsing...</div>';
+            loading.innerHTML = `<div>Parsing ${(decompressed.length / 1e6).toFixed(1)} MB...</div>`;
+            await new Promise(r => setTimeout(r, 0));
             const text = new TextDecoder().decode(decompressed);
             const data = JSON.parse(text);
             const files = data.files.map(f => ({ inode: f[0], size: f[1], path: f[2] }));
 
-            loading.innerHTML = '<div>Building tree...</div>';
+            loading.innerHTML = `<div>Building tree (${files.length.toLocaleString()} files)...</div>`;
+            await new Promise(r => setTimeout(r, 0));
             rootData = buildTree(files, data.root);
             loading.style.display = 'none';
             renderTreemap(rootData);
