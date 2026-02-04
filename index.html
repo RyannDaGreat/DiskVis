@@ -234,8 +234,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             zoom: 1,
             panX: 0,
             panY: 0,
-            minZoom: 1,
-            maxZoom: 100,
+            minZoom: 0.1,
+            maxZoom: 1000,
 
             /** @pure Default viewport state */
             defaults() {
@@ -326,6 +326,10 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             /** Label positioning */
             LABEL_PADDING_X: 4,
             LABEL_PADDING_Y: 12,
+
+            /** Rectangle border */
+            BORDER_WIDTH: 0.5,       // pixels
+            BORDER_DARKNESS: 0.15,   // 0=black, 1=no darkening
 
             /** GrandPerspective "Rainbow" palette (exact colors from source) */
             COLORS: [
@@ -865,9 +869,11 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 uniform vec2 u_resolution;
                 uniform float u_zoom;
                 uniform vec2 u_pan;
+                uniform float u_borderWidth;
 
                 out vec3 v_color;
                 out vec2 v_uv;
+                out float v_borderUV;
 
                 void main() {
                     // Calculate world position
@@ -881,14 +887,19 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 
                     v_color = a_color;
                     v_uv = a_corner;
+                    // Border width in UV space (pixels / screen size)
+                    float screenSize = min(a_rect.z, a_rect.w) * u_zoom;
+                    v_borderUV = u_borderWidth / max(screenSize, 1.0);
                 }
             `,
 
-            /** Fragment shader - applies gradient from dark to light */
+            /** Fragment shader - applies gradient and border */
             FRAG_SRC: `#version 300 es
                 precision mediump float;
                 in vec3 v_color;
                 in vec2 v_uv;
+                in float v_borderUV;
+                uniform float u_borderDarkness;
                 out vec4 fragColor;
 
                 void main() {
@@ -897,6 +908,12 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     vec3 dark = v_color * 0.6;
                     vec3 light = min(v_color * 1.3, vec3(1.0));
                     vec3 color = mix(dark, light, t);
+
+                    // Thin dark border
+                    float edge = min(min(v_uv.x, v_uv.y), min(1.0 - v_uv.x, 1.0 - v_uv.y));
+                    float border = smoothstep(0.0, v_borderUV, edge);
+                    color *= mix(u_borderDarkness, 1.0, border);
+
                     fragColor = vec4(color, 1.0);
                 }
             `,
@@ -928,7 +945,9 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     a_color: gl.getAttribLocation(program, 'a_color'),
                     u_resolution: gl.getUniformLocation(program, 'u_resolution'),
                     u_zoom: gl.getUniformLocation(program, 'u_zoom'),
-                    u_pan: gl.getUniformLocation(program, 'u_pan')
+                    u_pan: gl.getUniformLocation(program, 'u_pan'),
+                    u_borderWidth: gl.getUniformLocation(program, 'u_borderWidth'),
+                    u_borderDarkness: gl.getUniformLocation(program, 'u_borderDarkness')
                 };
 
                 // Create corner buffer (quad vertices)
@@ -1029,6 +1048,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 gl.uniform2f(this.locs.u_resolution, cssWidth, cssHeight);
                 gl.uniform1f(this.locs.u_zoom, viewport.zoom);
                 gl.uniform2f(this.locs.u_pan, viewport.panX, viewport.panY);
+                gl.uniform1f(this.locs.u_borderWidth, Config.BORDER_WIDTH);
+                gl.uniform1f(this.locs.u_borderDarkness, Config.BORDER_DARKNESS);
 
                 // Draw all rects in one call
                 gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.rectCount);
