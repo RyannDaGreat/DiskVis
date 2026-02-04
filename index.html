@@ -77,7 +77,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             height: calc(100vh - 50px);
             position: relative;
         }
-        #canvas { display: block; cursor: pointer; }
+        #canvas { display: block; cursor: pointer; transform-origin: 0 0; }
 
         /* Tooltip */
         #tooltip {
@@ -925,6 +925,20 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     panX: mouseX - worldX * newZoom,
                     panY: mouseY - worldY * newZoom
                 };
+            },
+
+            /**
+             * @pure Calculate CSS transform to show viewport delta without redrawing.
+             * @example ZoomMath.calcCSSTransform({zoom:2, panX:10, panY:20}, {zoom:1, panX:0, panY:0})
+             *          // => { scale: 2, tx: 10, ty: 20 }
+             */
+            calcCSSTransform(current, rendered) {
+                const scale = current.zoom / rendered.zoom;
+                return {
+                    scale,
+                    tx: current.panX - rendered.panX * scale,
+                    ty: current.panY - rendered.panY * scale
+                };
             }
         };
 
@@ -935,30 +949,31 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         /** Debounced full redraw after interaction */
         function scheduleRedraw() {
             clearTimeout(viewportRedrawTimeout);
-            viewportRedrawTimeout = setTimeout(() => {
-                if (currentNode) renderTreemap(currentNode, null);
+            viewportRedrawTimeout = setTimeout(async () => {
+                if (currentNode) {
+                    // Commit CSS transform to Viewport before rendering
+                    Viewport.zoom = Viewport.zoom * cssTransform.scale;
+                    Viewport.panX = Viewport.panX * cssTransform.scale + cssTransform.tx;
+                    Viewport.panY = Viewport.panY * cssTransform.scale + cssTransform.ty;
+                    await renderTreemap(currentNode, null);
+                    clearViewportTransform();
+                }
             }, Config.RESIZE_DEBOUNCE_MS);
         }
 
-        /** Synchronous fast redraw for live pan/zoom (solid colors only) */
-        function drawCanvasSync() {
-            const scale = Format.renderScale();
-            const width = canvas.width / scale;
-            const height = canvas.height / scale;
-            const { zoom, panX, panY } = Viewport;
+        // CSS transform state (applied on top of rendered canvas, reset after full redraw)
+        let cssTransform = { scale: 1, tx: 0, ty: 0 };
 
-            ctx.fillStyle = '#1a1a2e';
-            ctx.fillRect(0, 0, width, height);
+        /** Apply current CSS transform */
+        function applyViewportTransform() {
+            const { scale, tx, ty } = cssTransform;
+            canvas.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+        }
 
-            for (const rect of renderedRects) {
-                if (!Viewport.isRectVisible(rect, width, height, zoom, panX, panY)) continue;
-
-                const sx = rect.x * zoom + panX;
-                const sy = rect.y * zoom + panY;
-                const [r, g, b] = colorsRGB[rect.colorIdx];
-                ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                ctx.fillRect(sx, sy, rect.w * zoom, rect.h * zoom);
-            }
+        /** Commit CSS transform to Viewport, redraw, then reset transform */
+        function clearViewportTransform() {
+            canvas.style.transform = '';
+            cssTransform = { scale: 1, tx: 0, ty: 0 };
         }
 
         // Touch handlers - thin, delegate to pure functions
@@ -984,7 +999,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             Viewport.zoom = newState.zoom;
             Viewport.panX = newState.panX;
             Viewport.panY = newState.panY;
-            drawCanvasSync();
+            applyViewportTransform();
         }, { passive: false });
 
         canvas.addEventListener('touchend', (e) => {
@@ -994,26 +1009,49 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             }
         });
 
-        canvas.addEventListener('dblclick', () => {
-            if (Viewport.zoom !== 1 || Viewport.panX !== 0 || Viewport.panY !== 0) {
+        canvas.addEventListener('dblclick', async () => {
+            if (Viewport.zoom !== 1 || Viewport.panX !== 0 || Viewport.panY !== 0 ||
+                cssTransform.scale !== 1 || cssTransform.tx !== 0 || cssTransform.ty !== 0) {
                 Viewport.reset();
-                if (currentNode) renderTreemap(currentNode, null);
+                clearViewportTransform();
+                if (currentNode) {
+                    await renderTreemap(currentNode, null);
+                }
             }
         });
 
+        // Prevent browser zoom on pinch (must be at document level)
+        document.addEventListener('wheel', (e) => {
+            if (e.ctrlKey) e.preventDefault();
+        }, { passive: false });
+
         canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
-            const rect = canvas.getBoundingClientRect();
-            const newState = ZoomMath.calcWheelZoom(
-                e.clientX - rect.left, e.clientY - rect.top,
-                Viewport.zoom, Viewport.panX, Viewport.panY,
-                e.deltaY, Viewport.minZoom, Viewport.maxZoom
-            );
+            if (e.ctrlKey) {
+                // Pinch-to-zoom: update CSS transform (not Viewport)
+                const rect = canvas.getBoundingClientRect();
+                const localX = e.clientX - rect.left;
+                const localY = e.clientY - rect.top;
 
-            Viewport.zoom = newState.zoom;
-            Viewport.panX = newState.panX;
-            Viewport.panY = newState.panY;
-            drawCanvasSync();
+                // Continuous zoom factor like Pixel-Aligner
+                const zoomFactor = 1 - e.deltaY * 0.01;
+                const newScale = ZoomMath.clampZoom(
+                    cssTransform.scale * zoomFactor,
+                    Viewport.minZoom / Viewport.zoom,
+                    Viewport.maxZoom / Viewport.zoom
+                );
+
+                // Zoom towards cursor: keep point under cursor fixed
+                const factor = 1 - newScale / cssTransform.scale;
+                cssTransform.tx += localX * factor;
+                cssTransform.ty += localY * factor;
+                cssTransform.scale = newScale;
+            } else {
+                // Two-finger pan: update CSS transform (not Viewport)
+                cssTransform.tx -= e.deltaX;
+                cssTransform.ty -= e.deltaY;
+            }
+            applyViewportTransform();
             scheduleRedraw();
         }, { passive: false });
 
@@ -1054,6 +1092,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             clearTimeout(resizeTimeout);
             resizeTimeout = setTimeout(async () => {
                 Viewport.reset();  // Reset zoom on resize since canvas dimensions change
+                canvas.style.transform = '';  // Clear transform immediately
                 ProgressUI.show({ stages: ['render'], showInfo: false });
                 ProgressUI.setStage('render', 'active');
                 let lastYield = performance.now();
@@ -1065,6 +1104,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     }
                 });
                 ProgressUI.setStage('render', 'done');
+                clearViewportTransform();
                 ProgressUI.hide();
             }, Config.RESIZE_DEBOUNCE_MS);
         });
@@ -1306,6 +1346,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 }
             });
             ProgressUI.setStage('render', 'done');
+            clearViewportTransform();
 
             ProgressUI.hide();
         }
