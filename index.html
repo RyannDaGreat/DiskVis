@@ -416,6 +416,41 @@ MANDATORY STANDARDS - All contributors must follow these rules.
              */
             renderScale() {
                 return Config.RENDER_SCALE * (window.devicePixelRatio || 1);
+            },
+
+            /**
+             * @pure Truncate filename in the middle, preserving extension.
+             * @param {string} name - Filename to truncate
+             * @param {function} measureFn - Function that returns width of text
+             * @param {number} maxWidth - Maximum allowed width
+             * @returns {string} Truncated filename with '…' in middle
+             * @example Format.middleTruncate('longfile.txt', fn, 50) // => 'lon…e.txt'
+             */
+            middleTruncate(name, measureFn, maxWidth) {
+                if (measureFn(name) <= maxWidth) return name;
+
+                // Find extension (last dot, but not at start)
+                const dotIdx = name.lastIndexOf('.');
+                const hasExt = dotIdx > 0;
+                const ext = hasExt ? name.slice(dotIdx) : '';
+                const base = hasExt ? name.slice(0, dotIdx) : name;
+
+                // Binary search for how many chars we can keep
+                let lo = 1, hi = base.length - 1;
+                while (lo < hi) {
+                    const mid = Math.ceil((lo + hi) / 2);
+                    const half = Math.floor(mid / 2);
+                    const candidate = base.slice(0, half) + '…' + base.slice(-(mid - half)) + ext;
+                    if (measureFn(candidate) <= maxWidth) {
+                        lo = mid;
+                    } else {
+                        hi = mid - 1;
+                    }
+                }
+
+                if (lo < 2) return base[0] + '…' + ext;
+                const half = Math.floor(lo / 2);
+                return base.slice(0, half) + '…' + base.slice(-(lo - half)) + ext;
             }
         };
 
@@ -793,15 +828,9 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             textCtx.shadowOffsetY = 1 * scale;
 
             for (const { node, sx, sy, sw, sh } of labels) {
-                const text = node.name;
                 const maxWidth = sw * scale - Config.LABEL_PADDING_X * 2 * scale;
-                let displayText = text;
-                if (textCtx.measureText(text).width > maxWidth) {
-                    while (displayText.length > 3 && textCtx.measureText(displayText + '…').width > maxWidth) {
-                        displayText = displayText.slice(0, -1);
-                    }
-                    displayText += '…';
-                }
+                const measureFn = t => textCtx.measureText(t).width;
+                const displayText = Format.middleTruncate(node.name, measureFn, maxWidth);
                 textCtx.fillText(displayText, sx * scale + Config.LABEL_PADDING_X * scale, sy * scale + Config.LABEL_PADDING_Y * scale);
             }
 
