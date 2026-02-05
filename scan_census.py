@@ -46,7 +46,10 @@ CENSUS_EXT = '.census.zst'
 
 def save_census(path: str, files: list, root: str, timestamp: int) -> int:
     """
-    Pure (except I/O). Save census as JSON + zstd.
+    Pure (except I/O). Save census as JSONL + zstd.
+
+    Format: Line 1 is header {"root": ..., "timestamp": ..., "count": ...}
+            Remaining lines are file entries [inode, size, path]
 
     Args:
         path (str): Output file path.
@@ -64,13 +67,11 @@ def save_census(path: str, files: list, root: str, timestamp: int) -> int:
     True
     >>> os.unlink(f.name)
     """
-    census = {
-        'root': root,
-        'timestamp': timestamp,
-        'files': files,
-    }
-    json_bytes = json.dumps(census).encode()
-    compressed = zstd.ZstdCompressor(level=ZSTD_LEVEL).compress(json_bytes)
+    header = {'root': root, 'timestamp': timestamp, 'count': len(files)}
+    lines = [json.dumps(header)]
+    lines.extend(json.dumps(f) for f in files)
+    jsonl_bytes = '\n'.join(lines).encode()
+    compressed = zstd.ZstdCompressor(level=ZSTD_LEVEL).compress(jsonl_bytes)
     with open(path, 'wb') as f:
         f.write(compressed)
     return len(compressed)
@@ -78,7 +79,7 @@ def save_census(path: str, files: list, root: str, timestamp: int) -> int:
 
 def load_census(path: str) -> dict:
     """
-    Pure (except I/O). Load census from JSON + zstd.
+    Pure (except I/O). Load census from JSONL + zstd.
 
     Args:
         path (str): Path to .census.zst file.
@@ -98,8 +99,11 @@ def load_census(path: str) -> dict:
     """
     with open(path, 'rb') as f:
         compressed = f.read()
-    json_bytes = zstd.ZstdDecompressor().decompress(compressed)
-    return json.loads(json_bytes)
+    jsonl_bytes = zstd.ZstdDecompressor().decompress(compressed)
+    lines = jsonl_bytes.decode().split('\n')
+    header = json.loads(lines[0])
+    files = [json.loads(line) for line in lines[1:] if line]
+    return {'root': header['root'], 'timestamp': header['timestamp'], 'files': files}
 
 
 def load_census_folder(folder: str) -> dict:
