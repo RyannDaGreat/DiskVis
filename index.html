@@ -487,6 +487,11 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     const part = parts[j];
                     const isLeaf = j === parts.length - 1 || j === opaqueDepth;
 
+                    // If current was previously a leaf but we need to traverse deeper, convert to branch
+                    if (current.children === null) {
+                        current.children = {};
+                    }
+
                     if (!current.children[part]) {
                         current.children[part] = {
                             name: part,
