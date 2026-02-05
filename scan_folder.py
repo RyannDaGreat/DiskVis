@@ -110,27 +110,78 @@ def load_jsonl_zstd(input_path: Path) -> dict:
     return header
 
 
-def scan(path: str = "~", output: str = None, follow_symlinks: bool = False, cross_mounts: bool = False):
+def _checkpoint_path(output: str) -> Path:
+    """Get checkpoint file path for a given output file."""
+    return Path(str(output) + '.checkpoint')
+
+
+def _save_checkpoint(files: list, output: str, root: str):
+    """Save checkpoint to disk (uncompressed JSONL for speed)."""
+    checkpoint = _checkpoint_path(output)
+    # Write to temp file then rename for atomicity
+    tmp = checkpoint.with_suffix('.tmp')
+    with open(tmp, 'w') as f:
+        f.write(json.dumps({'version': 2, 'root': root, 'timestamp': int(time.time()), 'count': len(files)}) + '\n')
+        for entry in files:
+            f.write(json.dumps(entry) + '\n')
+    tmp.rename(checkpoint)
+
+
+def _load_checkpoint(output: str, root: str) -> list:
+    """Load checkpoint if it exists and matches the root. Returns list of files or empty list."""
+    checkpoint = _checkpoint_path(output)
+    if not checkpoint.exists():
+        return []
+    try:
+        with open(checkpoint, 'r') as f:
+            header = json.loads(f.readline())
+            if header.get('root') != root:
+                print(f"Checkpoint root mismatch, starting fresh", file=sys.stderr)
+                return []
+            files = [json.loads(line) for line in f if line.strip()]
+            print(f"Resuming from checkpoint: {len(files):,} files already scanned", file=sys.stderr)
+            return files
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"Corrupt checkpoint, starting fresh: {e}", file=sys.stderr)
+        return []
+
+
+def scan(path: str = "~", output: str = None, follow_symlinks: bool = False, cross_mounts: bool = False, checkpoint_interval: int = 10000):
     """
     Scan a folder and optionally save as JSON + zstd.
 
     Args:
         path: Path to scan.
-        output: Output file (.json.zst).
+        output: Output file (.json.zst). Required for resume capability.
         follow_symlinks: Follow symbolic links.
         cross_mounts: Cross filesystem boundaries (default stays on starting mount).
+        checkpoint_interval: Save checkpoint every N files (default 10000).
     """
     target = Path(path).expanduser().resolve()
     print(f"Scanning {target}...", file=sys.stderr)
 
+    # Load checkpoint if resuming
     files = []
-    total_size = 0
+    seen_inodes = set()
+    if output:
+        files = _load_checkpoint(output, str(target))
+        seen_inodes = {f[0] for f in files}  # f[0] is inode
+
+    total_size = sum(f[1] for f in files)  # f[1] is size
+    new_count = 0
 
     for inode, size, fpath in scan_with_bfs(target, follow_symlinks=follow_symlinks, cross_mounts=cross_mounts):
+        if inode in seen_inodes:
+            continue  # Skip already-scanned files
+        seen_inodes.add(inode)
         files.append([inode, size, fpath])
-        if len(files) % 10000 == 0:
-            print(f"  {len(files):,} files, {total_size / 1e9:.1f} GB...", file=sys.stderr)
         total_size += size
+        new_count += 1
+
+        if new_count % checkpoint_interval == 0:
+            print(f"  {len(files):,} files, {total_size / 1e9:.1f} GB...", file=sys.stderr)
+            if output:
+                _save_checkpoint(files, output, str(target))
 
     print(f"Done: {len(files):,} files, {total_size / 1e9:.2f} GB", file=sys.stderr)
 
@@ -139,6 +190,11 @@ def scan(path: str = "~", output: str = None, follow_symlinks: bool = False, cro
         raw_estimate = len(files) * 50
         ratio = (1 - compressed_size / raw_estimate) * 100 if raw_estimate > 0 else 0
         print(f"Saved: {output} ({compressed_size / 1e6:.2f} MB, ~{ratio:.0f}% compression)", file=sys.stderr)
+        # Clean up checkpoint after successful save
+        checkpoint = _checkpoint_path(output)
+        if checkpoint.exists():
+            checkpoint.unlink()
+            print(f"Removed checkpoint file", file=sys.stderr)
 
 
 def load(path: str):
