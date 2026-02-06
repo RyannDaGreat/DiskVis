@@ -6,6 +6,8 @@
 
 ![Screen Recording 2026-02-06 at 5 52 06 AM](https://github.com/user-attachments/assets/a6513803-b77a-48b8-8e51-539132312f43)
 ![Screen Recording 2026-02-06 at 6 12 40 AM](https://github.com/user-attachments/assets/9a42e400-ae38-4276-9999-5795bff94083)
+<img width="1088" height="924" alt="image" src="https://github.com/user-attachments/assets/05f51c02-0621-4066-b9de-6b2b89e6232d" />
+
 
 Visualize disk usage with interactive treemaps (like GrandPerspective) and sunburst charts (like DaisyDisk) — directly in your browser, for any filesystem, even remote ones. Zoomable, pannable, 120fps smooth — great on Mac trackpads.
 
