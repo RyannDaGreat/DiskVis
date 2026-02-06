@@ -9,6 +9,7 @@ Usage:
     python lod_census.py root.census.zst --target=500000
     python lod_census.py root.census.zst --target=500000 --output=root.lod.census.zst
 """
+from __future__ import annotations
 
 import json
 import os
@@ -21,40 +22,14 @@ import zstandard as zstd
 ZSTD_LEVEL = 3
 
 
-def load_census_old_format(path: str) -> tuple[list, str, int]:
-    """Load census from old single-JSON format."""
-    with open(path, 'rb') as f:
-        data = zstd.ZstdDecompressor().decompress(f.read())
-    census = json.loads(data)
-    return census['files'], census['root'], census['timestamp']
-
-
-def load_census_jsonl(path: str) -> tuple[list, str, int]:
-    """Load census from JSONL format."""
+def load_census(path: str) -> tuple[list, str, int]:
+    """Load census from JSONL + zstd format."""
     with open(path, 'rb') as f:
         data = zstd.ZstdDecompressor().decompress(f.read())
     lines = data.decode().split('\n')
     header = json.loads(lines[0])
     files = [json.loads(line) for line in lines[1:] if line]
     return files, header['root'], header['timestamp']
-
-
-def load_census(path: str) -> tuple[list, str, int]:
-    """Load census, auto-detecting format."""
-    with open(path, 'rb') as f:
-        data = zstd.ZstdDecompressor().decompress(f.read())
-
-    # JSONL starts with {, old format is a single JSON object with 'files' array
-    if data.startswith(b'{"root"') and b'\n[' in data[:1000]:
-        # JSONL format
-        lines = data.decode().split('\n')
-        header = json.loads(lines[0])
-        files = [json.loads(line) for line in lines[1:] if line]
-        return files, header['root'], header['timestamp']
-    else:
-        # Old single-JSON format
-        census = json.loads(data)
-        return census['files'], census['root'], census['timestamp']
 
 
 def save_census(path: str, files: list, root: str, timestamp: int) -> int:
