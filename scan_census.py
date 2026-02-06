@@ -27,6 +27,7 @@ import tempfile
 import time
 from glob import glob
 from pathlib import Path
+from typing import Optional
 
 import fire
 import zstandard as zstd
@@ -172,7 +173,7 @@ def merge_censuses(censuses: list) -> dict:
 # PURE FUNCTIONS - Resume logic
 # =============================================================================
 
-def get_checkpoint_dir(root: str, explicit_dir: str | None, one_file_system: bool,
+def get_checkpoint_dir(root: str, explicit_dir: Optional[str], one_file_system: bool,
                        follow_symlinks: bool, disk_usage: bool) -> str:
     """
     Pure. Get checkpoint directory path.
@@ -199,7 +200,7 @@ def get_checkpoint_dir(root: str, explicit_dir: str | None, one_file_system: boo
     return os.path.join(tempfile.gettempdir(), f'scan_census_{h}')
 
 
-def get_resume_point(folder: str) -> str | None:
+def get_resume_point(folder: str) -> Optional[str]:
     """
     Pure (except I/O). Find the last scanned path from latest checkpoint.
 
@@ -229,7 +230,7 @@ def get_resume_point(folder: str) -> str | None:
     return latest['files'][-1][2]  # [2] is path
 
 
-def should_skip(path: str, resume_point: str | None) -> bool:
+def should_skip(path: str, resume_point: Optional[str]) -> bool:
     """
     Pure. Check if path should be skipped (already scanned).
 
