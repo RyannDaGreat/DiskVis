@@ -290,7 +290,7 @@ def hash_args(root: str, one_file_system: bool, follow_symlinks: bool, disk_usag
 
 def scan(
     root: str = '/',
-    output: str = None,
+    output: str = 'census_output.census.zst',
     checkpoint_dir: str = None,
     checkpoint_interval: int = 100_000,
     one_file_system: bool = True,
@@ -298,7 +298,7 @@ def scan(
     show_progress: bool = True,
     disk_usage: bool = True,
     report_errors: bool = False,
-) -> dict:
+) -> str:
     """
     Stateful. Scan a directory tree and save as census.
 
@@ -307,7 +307,7 @@ def scan(
     Args:
         root (str): Directory to scan. Default: '/'
             Example: /Users, /mnt/nfs
-        output (str): Output file path. Default: None (no save)
+        output (str): Output file path. Default: 'census_output.census.zst'
             Example: backup.census.zst
         checkpoint_dir (str): Where to store checkpoints. Default: None (auto temp folder)
             Example: /tmp/my_scan_checkpoints
@@ -321,7 +321,7 @@ def scan(
         report_errors (bool): Print permission/access errors to stderr. Default: False
 
     Returns:
-        dict: Census with keys 'root', 'timestamp', 'files'
+        str: The output file path
 
     Examples:
         python scan_census.py scan /
@@ -452,7 +452,7 @@ def scan(
         if show_progress:
             print(f"Cleaned up checkpoints: {ckpt_dir}", file=sys.stderr)
 
-    return census
+    return output
 
 
 def load(path: str) -> None:

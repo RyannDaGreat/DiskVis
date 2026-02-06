@@ -120,6 +120,37 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         #loading:hover { border-color: var(--accent); }
         #loading.processing { cursor: default; }
 
+        /* View toggle buttons */
+        .view-toggle {
+            display: flex;
+            border-radius: 8px;
+            overflow: hidden;
+            gap: 1px;
+        }
+        .view-btn {
+            padding: 6px 14px;
+            border: none;
+            background: transparent;
+            color: var(--text-dim);
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .view-btn:hover { color: var(--text); background: var(--glass-subtle); }
+        .view-btn.active {
+            color: var(--accent);
+            background: var(--accent-bg);
+        }
+
+        /* Sunburst canvas */
+        #sunburstCanvas, #icicleCanvas {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            cursor: pointer;
+        }
+
         #loading #fileInput {
             position: absolute;
             inset: 0;
@@ -196,11 +227,18 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 <body>
     <div id="header" class="glass">
         <h1>Disk Space Visualization</h1>
+        <div class="view-toggle glass">
+            <button class="view-btn active" data-view="treemap">Treemap</button>
+            <button class="view-btn" data-view="sunburst">Sunburst</button>
+            <button class="view-btn" data-view="icicle">Icicle</button>
+        </div>
         <div id="stats"></div>
     </div>
     <div id="container">
         <canvas id="canvas"></canvas>
         <canvas id="textOverlay"></canvas>
+        <canvas id="sunburstCanvas"></canvas>
+        <canvas id="icicleCanvas"></canvas>
     </div>
     <div id="tooltip" class="glass glass-panel"></div>
     <div id="loading" class="glass glass-panel">
@@ -304,6 +342,79 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             }
         };
 
+        /**
+         * SunburstViewport - Pan/zoom state for sunburst view.
+         * Same interface as Viewport.
+         */
+        const SunburstViewport = {
+            zoom: 1,
+            panX: 0,
+            panY: 0,
+            minZoom: 0.3,
+            maxZoom: 10,
+
+            defaults() {
+                return { zoom: 1, panX: 0, panY: 0 };
+            },
+
+            apply(state) {
+                this.zoom = state.zoom;
+                this.panX = state.panX;
+                this.panY = state.panY;
+            },
+
+            reset() {
+                this.apply(this.defaults());
+            }
+        };
+
+        /**
+         * IcicleViewport - Pan/zoom for icicle view.
+         * Zoom only affects X axis (horizontal stretch).
+         * Pan works in both directions.
+         */
+        const IcicleViewport = {
+            zoom: 1,
+            panX: 0,
+            panY: 0,
+            minZoom: 1,
+            maxZoom: 10000,
+
+            defaults() {
+                return { zoom: 1, panX: 0, panY: 0 };
+            },
+
+            apply(state) {
+                // Guard against NaN/Infinity corrupting viewport state
+                if (Number.isFinite(state.zoom)) this.zoom = state.zoom;
+                if (Number.isFinite(state.panX)) this.panX = state.panX;
+                if (state.panY !== undefined && Number.isFinite(state.panY)) this.panY = state.panY;
+            },
+
+            reset() {
+                this.apply(this.defaults());
+            },
+
+            /** @pure Screen X to world X (with horizontal zoom) */
+            screenToWorldX(screenX) {
+                return (screenX - this.panX) / this.zoom;
+            },
+
+            /** @pure Zoom towards screen X position (horizontal only) */
+            zoomTowardsX(screenX, newZoom) {
+                const worldX = this.screenToWorldX(screenX);
+                const clampedZoom = Math.max(this.minZoom, Math.min(this.maxZoom, newZoom));
+                const newPanX = screenX - worldX * clampedZoom;
+                // Guard against NaN/Infinity from extreme calculations
+                if (!Number.isFinite(newPanX)) return { zoom: this.zoom, panX: this.panX, panY: this.panY };
+                return {
+                    zoom: clampedZoom,
+                    panX: newPanX,
+                    panY: this.panY
+                };
+            }
+        };
+
         /* ============================================================
          * SECTION: Config
          * All constants in one place. No logic, just values.
@@ -331,6 +442,13 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             BORDER_WIDTH: 0.5,       // pixels
             BORDER_DARKNESS: 0.15,   // 0=black, 1=no darkening
 
+            /** File icons */
+            ICON_MIN_SIZE: 60,       // minimum rect size (px) to show icon
+            ICON_SCALE: 0.4,         // icon size as fraction of rect min dimension
+            ICON_MAX_SIZE: 64,       // max icon size in pixels
+            ICON_OPACITY: 0.15,      // subtle embossed effect
+            ICON_SHADOW_OFFSET: 1.5, // emboss shadow offset in pixels
+
             /** GrandPerspective "Rainbow" palette (exact colors from source) */
             COLORS: [
                 '#FFFF54', '#C8E64C', '#8CD466', '#4DC742',
@@ -355,6 +473,629 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 // IDEs
                 '.idea', '.vscode'
             ]
+        };
+
+        /**
+         * RenderStyle - Shared visual styling for all Canvas2D renderers.
+         * DRY: Single source of truth for text, borders, and colors.
+         * @pure All functions return values, none mutate.
+         */
+        const RenderStyle = {
+            // Label text constants
+            LABEL_FONT_SIZE: 11,
+            LABEL_OPACITY: 0.9,
+            LABEL_FONT: '-apple-system, BlinkMacSystemFont, sans-serif',
+            SHADOW_OPACITY: 0.8,
+            SHADOW_BLUR: 2,
+            MIN_LABEL_WIDTH: 30,
+
+            // Gradient constants (matches treemap WebGL shader)
+            GRADIENT_DARK: 0.6,
+            GRADIENT_LIGHT: 1.3,
+
+            // Highlight/hover brightness increase
+            HIGHLIGHT_BRIGHTNESS: 40,
+
+            // Rect rendering thresholds
+            MIN_RECT_WIDTH: 1,
+            SKIP_RECT_THRESHOLD: 0.33,
+
+            // Merged rect base color [r, g, b] for "N smaller" rects
+            MERGED_RECT_COLOR: [100, 100, 120],
+
+            /**
+             * @pure Label text style spec.
+             * @param {number} scale - DPI scale factor
+             * @returns {object} Style properties to apply to ctx
+             */
+            labelText(scale = 1) {
+                return {
+                    fillStyle: `rgba(255, 255, 255, ${this.LABEL_OPACITY})`,
+                    font: `${this.LABEL_FONT_SIZE * scale}px ${this.LABEL_FONT}`,
+                    shadowColor: `rgba(0, 0, 0, ${this.SHADOW_OPACITY})`,
+                    shadowBlur: this.SHADOW_BLUR * scale,
+                    shadowOffsetX: 0,
+                    shadowOffsetY: scale
+                };
+            },
+
+            /**
+             * @pure Border color from base RGB (darkened).
+             */
+            borderColor(r, g, b) {
+                const d = Config.BORDER_DARKNESS;
+                return `rgb(${Math.round(r * d)}, ${Math.round(g * d)}, ${Math.round(b * d)})`;
+            },
+
+            /**
+             * @pure Highlight color adjustment.
+             * @returns {number[]} [r, g, b] brightened
+             */
+            highlightRGB(r, g, b) {
+                const bright = this.HIGHLIGHT_BRIGHTNESS;
+                return [Math.min(255, r + bright), Math.min(255, g + bright), Math.min(255, b + bright)];
+            },
+
+            /**
+             * @pure Create diagonal gradient (dark top-left, light bottom-right).
+             * Matches treemap WebGL shader gradient.
+             */
+            diagonalGradient(ctx, x, y, w, h, r, g, b) {
+                const grad = ctx.createLinearGradient(x, y, x + w, y + h);
+                const dk = this.GRADIENT_DARK;
+                const lt = this.GRADIENT_LIGHT;
+                const dark = [Math.round(r * dk), Math.round(g * dk), Math.round(b * dk)];
+                const light = [Math.min(255, Math.round(r * lt)), Math.min(255, Math.round(g * lt)), Math.min(255, Math.round(b * lt))];
+                grad.addColorStop(0, `rgb(${dark[0]}, ${dark[1]}, ${dark[2]})`);
+                grad.addColorStop(1, `rgb(${light[0]}, ${light[1]}, ${light[2]})`);
+                return grad;
+            },
+
+            /** Apply a style spec to a canvas context (the only non-pure operation) */
+            apply(ctx, style) {
+                Object.assign(ctx, style);
+            },
+
+            /** Reset shadow on context */
+            clearShadow(ctx) {
+                ctx.shadowBlur = 0;
+            }
+        };
+
+        /**
+         * FileIcons - Extension to icon mapping and SVG loading.
+         * State: cache (loaded SVG images)
+         */
+        const FileIcons = {
+            /**
+             * Extension → vscode-icons icon name (file-type-{name})
+             * VERIFIED against Iconify API - only includes icons that actually exist
+             * Use full names (python not py, typescript not ts)
+             */
+            EXTENSIONS: {
+                // Programming languages (verified)
+                js: 'js', mjs: 'js', cjs: 'js',
+                ts: 'typescript', mts: 'typescript', cts: 'typescript',
+                jsx: 'reactjs', tsx: 'reactts',
+                py: 'python', pyw: 'python', pyi: 'python',
+                rb: 'ruby', erb: 'ruby',
+                rs: 'rust',
+                go: 'go',
+                java: 'java', jar: 'jar', class: 'class',
+                kt: 'kotlin', kts: 'kotlin',
+                swift: 'swift', swiftmodule: 'swift', swiftdoc: 'swift',
+                c: 'c', h: 'cheader',
+                cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cppheader', hh: 'cppheader',
+                m: 'objectivec', mm: 'objectivecpp',
+                cs: 'csharp', csx: 'csharp',
+                php: 'php', phtml: 'php',
+                lua: 'lua',
+                r: 'r', R: 'r',
+                jl: 'julia',
+                ex: 'elixir', exs: 'elixir',
+                erl: 'erlang', hrl: 'erlang',
+                hs: 'haskell', lhs: 'haskell',
+                scala: 'scala', sc: 'scala',
+                clj: 'clojure', cljs: 'clojure', cljc: 'clojure',
+                pl: 'perl', pm: 'perl',
+                sh: 'shell', bash: 'shell', zsh: 'shell', fish: 'shell',
+                ps1: 'powershell', psm1: 'powershell',
+                sql: 'sql',
+                asm: 'assembly', s: 'assembly',
+                dart: 'dartlang',
+                zig: 'zig',
+                nim: 'nim',
+                wasm: 'wasm', wat: 'wasm',
+                sol: 'solidity',
+                // Web (verified)
+                html: 'html', htm: 'html',
+                css: 'css',
+                scss: 'scss', sass: 'sass',
+                less: 'less',
+                vue: 'vue',
+                svelte: 'svelte',
+                astro: 'astro',
+                graphql: 'graphql', gql: 'graphql',
+                // Data/config (verified)
+                json: 'json', json5: 'json',
+                yaml: 'yaml', yml: 'yaml',
+                toml: 'toml',
+                xml: 'xml', xsl: 'xml', xslt: 'xml',
+                ini: 'ini', cfg: 'config', conf: 'config',
+                env: 'dotenv',
+                proto: 'protobuf',
+                prisma: 'prisma',
+                // Documents (verified)
+                pdf: 'pdf',
+                md: 'markdown', markdown: 'markdown',
+                txt: 'text',
+                tex: 'tex',
+                adoc: 'asciidoc',
+                doc: 'word', docx: 'word', docm: 'word', dotx: 'word',
+                xls: 'excel', xlsx: 'excel', xlsm: 'excel', xlsb: 'excel',
+                ppt: 'powerpoint', pptx: 'powerpoint', pptm: 'powerpoint', potx: 'powerpoint',
+                // OpenDocument formats
+                odt: 'text', ods: 'excel', odp: 'powerpoint', odg: 'image',
+                // Apple iWork
+                pages: 'apple-app', numbers: 'apple-app', key: 'apple-app',
+                // Note-taking
+                one: 'text', enex: 'xml',
+                // Calendar/Contacts
+                ics: 'config', ical: 'config', vcf: 'config', vcard: 'config',
+                // WPS Office
+                wps: 'word', et: 'excel', dps: 'powerpoint',
+                // Images (verified - use generic 'image')
+                png: 'image', jpg: 'image', jpeg: 'image', gif: 'image',
+                webp: 'image', avif: 'image', bmp: 'image', ico: 'image',
+                tiff: 'image', tif: 'image', heic: 'image', heif: 'image',
+                svg: 'svg',
+                psd: 'photoshop',
+                ai: 'ai',
+                sketch: 'sketch',
+                // Video/audio (verified - use generic)
+                mp4: 'video', mov: 'video', avi: 'video', mkv: 'video', webm: 'video',
+                m4v: 'video', wmv: 'video', flv: 'video',
+                mp3: 'audio', wav: 'audio', flac: 'audio', ogg: 'audio', m4a: 'audio',
+                aac: 'audio', aiff: 'audio', wma: 'audio', opus: 'audio', alac: 'audio',
+                mid: 'audio', midi: 'audio',
+                // DAW / Audio Production
+                flp: 'flstudio',                                      // FL Studio
+                als: 'ableton', alc: 'ableton', adg: 'ableton',       // Ableton Live
+                logic: 'logic', logicx: 'logic',                      // Logic Pro
+                ptx: 'protools', ptf: 'protools',                     // Pro Tools
+                rpp: 'daw',                                           // Reaper
+                cpr: 'daw',                                           // Cubase
+                reason: 'daw',                                        // Reason
+                band: 'logic',                                        // GarageBand
+                aup: 'daw', aup3: 'daw',                              // Audacity
+                // Archives (verified)
+                zip: 'zip', tar: 'zip', gz: 'zip', bz2: 'zip', xz: 'zip',
+                rar: 'zip', '7z': 'zip', tgz: 'zip', zst: 'zip', lz4: 'zip',
+                // Disk images / VM
+                iso: 'binary', img: 'binary', vhd: 'binary', vmdk: 'binary', qcow2: 'binary',
+                hds: 'virtualbox', pvm: 'virtualbox',  // Parallels
+                // macOS packages
+                pkg: 'pkg', mpkg: 'pkg',
+                // 3D printing
+                gcode: '3dprint', gco: '3dprint',
+                // Game archives
+                rpa: 'game',  // Ren'Py archive (Slay the Spire, etc.)
+                // Torrents
+                torrent: 'binary',
+                // Subtitles
+                srt: 'text', sub: 'text', ass: 'text', vtt: 'text', ssa: 'text',
+                // eBooks
+                epub: 'text', mobi: 'text', azw: 'text', azw3: 'text', fb2: 'text',
+                cbr: 'zip', cbz: 'zip',
+                // Camera RAW
+                raw: 'image', cr2: 'image', cr3: 'image', nef: 'image', arw: 'image',
+                dng: 'image', orf: 'image', rw2: 'image', raf: 'image', pef: 'image',
+                // Backup/temp
+                bak: 'binary', old: 'binary', tmp: 'binary', temp: 'binary', swp: 'binary',
+                // Lock files
+                lock: 'config',
+                // Build/package (verified)
+                dockerfile: 'docker', Dockerfile: 'docker',
+                gradle: 'gradle',
+                cmake: 'cmake',
+                makefile: 'makefile', Makefile: 'makefile',
+                // Package managers (verified)
+                npmrc: 'npm',
+                yarnrc: 'yarn',
+                // Fonts (verified)
+                ttf: 'font', otf: 'font', woff: 'font', woff2: 'font', eot: 'font',
+                // 3D Modeling/CAD (comprehensive)
+                blend: 'blender',
+                obj: 'obj', mtl: 'obj',                              // Wavefront OBJ
+                fbx: 'fbx',                                           // Autodesk FBX
+                stl: 'stl',                                           // 3D printing
+                gltf: 'threejs', glb: 'threejs',                      // glTF
+                dae: 'threejs',                                       // Collada
+                '3ds': 'autodesk',                                    // 3DS Max
+                max: 'autodesk',                                      // 3DS Max native
+                ma: 'autodesk', mb: 'autodesk',                       // Maya
+                c4d: 'cinema4d',                                      // Cinema 4D
+                hip: 'houdini', hipnc: 'houdini',                     // Houdini
+                usd: 'threejs', usda: 'threejs', usdc: 'threejs', usdz: 'threejs', // Universal Scene Description
+                abc: 'threejs',                                       // Alembic
+                ply: 'obj',                                           // Polygon file
+                dxf: 'cad', dwg: 'cad',                               // AutoCAD
+                step: 'cad', stp: 'cad', iges: 'cad', igs: 'cad',    // CAD interchange
+                unity: 'unity', unitypackage: 'unity', prefab: 'unity', asset: 'unity',  // Unity
+                uasset: 'unreal', umap: 'unreal',                     // Unreal Engine
+                // Binary (verified - use generic 'binary')
+                so: 'binary', dylib: 'binary', a: 'binary',
+                bin: 'binary', dat: 'binary', o: 'binary',
+                // macOS (verified)
+                scpt: 'applescript', applescript: 'applescript',
+                // Database (verified)
+                db: 'db', sqlite: 'sqlite', sqlite3: 'sqlite',
+                // ML/Data Science
+                pt: 'pytorch', pth: 'pytorch', ckpt: 'pytorch',  // PyTorch
+                safetensors: 'safetensors',                       // Safetensors
+                weights: 'weights',                               // Model weights
+                onnx: 'onnx',                                     // ONNX
+                pb: 'tensorflow', keras: 'tensorflow',            // TensorFlow
+                npy: 'numpy', npz: 'numpy',                       // NumPy
+                pkl: 'pickle', pickle: 'pickle',                  // Pickle
+                csv: 'csv', tsv: 'csv',                           // Tabular data
+                parquet: 'parquet', pq: 'parquet',                // Parquet
+                feather: 'feather', arrow: 'feather',             // Arrow/Feather
+                hdf5: 'hdf5', h5: 'hdf5',                         // HDF5
+                ipynb: 'jupyter',                                 // Jupyter notebooks
+                // Git (verified)
+                gitignore: 'git', gitattributes: 'git', gitmodules: 'git',
+                // Security (verified)
+                key: 'key', crt: 'cert', cer: 'cert',
+                // CI/CD (verified)
+                gitlab: 'gitlab',
+                // Misc (verified)
+                log: 'log', journal: 'journal',  // systemd journal logs
+                license: 'license', LICENSE: 'license',
+                bat: 'bat',
+                // Xcode (verified)
+                xcodeproj: 'xcode', xcworkspace: 'xcode',
+                // Windows
+                exe: 'windows', msi: 'windows', dll: 'windows',
+                // Rust/Cargo
+                crate: 'crate',
+                // Linux packages
+                snap: 'snap', deb: 'binary', rpm: 'binary', AppImage: 'binary',
+                // macOS packages
+                dmg: 'dmg', pkg: 'pkg',
+                // Conda/Anaconda
+                conda: 'anaconda',
+                // JSON variants
+                jsonl: 'json', ndjson: 'json',
+                // Editor configs
+                vim: 'vim', vimrc: 'vim', nvim: 'neovim',
+                emacs: 'emacs', el: 'emacs',
+                // Shell configs
+                zshrc: 'zsh', bashrc: 'shell', bash_profile: 'shell',
+                tmux: 'tmux', 'tmux.conf': 'tmux',
+                // Homebrew
+                Brewfile: 'homebrew',
+                // Frameworks
+                framework: 'framework',
+                // Game Development
+                tscn: 'godot', gd: 'godot', tres: 'godot', res: 'godot',  // Godot
+                gmk: 'game', gm81: 'game', gml: 'game',                   // GameMaker
+                esp: 'game', esm: 'game', esl: 'game',                    // Elder Scrolls mods
+                wad: 'game', pk3: 'game', bsp: 'game',                    // Doom/Quake
+                vpk: 'game', vmf: 'game',                                 // Valve/Source
+                sav: 'binary', save: 'binary',                            // Save files
+                // Emulator ROMs
+                nes: 'game', sfc: 'game', smc: 'game',                    // Nintendo
+                gba: 'game', gb: 'game', gbc: 'game', nds: 'game',        // Game Boy
+                n64: 'game', z64: 'game',                                 // N64
+                nsp: 'game', xci: 'game',                                 // Switch
+                // Game textures
+                dds: 'image', tga: 'image', ktx: 'image', pvr: 'image',
+                // Shaders
+                hlsl: 'shader', glsl: 'shader', frag: 'shader', vert: 'shader', shader: 'shader',
+                // Scientific/Research
+                fasta: 'science', fa: 'science', fastq: 'science', fq: 'science',  // Bioinformatics
+                vcf: 'science', bam: 'science', sam: 'science', bed: 'science',
+                pdb: 'science', mol: 'science', sdf: 'science', xyz: 'science',    // Chemistry
+                shp: 'science', geojson: 'json', kml: 'xml', gpx: 'xml',           // GIS
+                fits: 'science', fit: 'science',                                    // Astronomy
+                dcm: 'science', nii: 'science',                                     // Medical imaging
+                nc: 'science', nc4: 'science', netcdf: 'science',                   // NetCDF
+                // DevOps/Infrastructure
+                tf: 'terraform', tfvars: 'terraform',                      // Terraform
+                bicep: 'azure',                                            // Azure Bicep
+                ansible: 'ansible',                                        // Ansible
+                service: 'systemd', socket: 'systemd', timer: 'systemd',   // Systemd
+                // Mobile Development
+                ipa: 'apple-app',                                          // iOS app
+                apk: 'android', aab: 'android', aar: 'android',            // Android
+                mobileprovision: 'apple-app',                              // iOS signing
+                storyboard: 'xcode', xib: 'xcode', xcassets: 'xcode',      // Xcode assets
+                pbxproj: 'xcode',                                          // Xcode project
+                podspec: 'cocoapods', Podfile: 'cocoapods',                // CocoaPods
+                strings: 'xcode',                                          // iOS localization
+                // Embedded/Hardware
+                ino: 'arduino', pde: 'arduino',                            // Arduino (pde is legacy)
+                kicad_sch: 'kicad', kicad_pcb: 'kicad', kicad_pro: 'kicad',  // KiCad
+                kicad_prl: 'kicad', kicad_fp: 'kicad', kicad_sym: 'kicad', // KiCad libs
+                brd: 'pcb', sch: 'pcb', lbr: 'pcb',                        // Eagle
+                prjpcb: 'pcb', pcbdoc: 'pcb', schdoc: 'pcb', schlib: 'pcb', // Altium
+                gbr: 'pcb', ger: 'pcb', drl: 'pcb', xln: 'pcb',            // Gerber/drill
+                gbl: 'pcb', gtl: 'pcb', gbs: 'pcb', gts: 'pcb',            // Gerber layers
+                svf: 'binary', xsvf: 'binary', jed: 'binary',              // JTAG/PLD
+                hex: 'binary', elf: 'binary', axf: 'binary',               // Firmware
+                v: 'verilog', vh: 'verilog', sv: 'verilog',                // Verilog
+                vhd: 'vhdl', vhdl: 'vhdl',                                 // VHDL
+                xpr: 'fpga', qpf: 'fpga', qsf: 'fpga',                     // FPGA projects
+                bit: 'binary', rbf: 'binary',                              // FPGA bitstreams
+                gcode: '3dprint', g: '3dprint', gco: '3dprint',             // 3D printing
+                '3mf': '3dprint', amf: '3dprint',                          // 3D printing formats
+                // Virtualization
+                vdi: 'virtualbox', vbox: 'virtualbox',                     // VirtualBox
+                pvm: 'binary', hdd: 'binary',                              // Parallels
+                qcow: 'binary',                                            // QEMU
+                vhdx: 'binary', avhdx: 'binary',                           // Hyper-V
+                sparseimage: 'dmg', sparsebundle: 'dmg',                   // macOS disk images
+                wim: 'windows', esd: 'windows',                            // Windows imaging
+                // Publishing/Ebooks
+                kfx: 'text',                                               // Kindle
+                ibooks: 'text', iba: 'text',                               // Apple Books
+                indd: 'indesign', idml: 'indesign', inx: 'indesign',       // InDesign
+                dvi: 'tex',                                                // TeX output
+                bib: 'tex',                                                // BibTeX
+                ps: 'binary', eps: 'image',                                // PostScript
+                // Cryptocurrency/Blockchain
+                wallet: 'binary', blk: 'binary', rev: 'binary',            // Bitcoin
+                vy: 'solidity',                                            // Vyper
+                move: 'binary', cairo: 'binary',                           // Other smart contracts
+                // Cache/System files
+                ldb: 'binary', laccdb: 'binary',                           // Lock files
+                DS_Store: 'binary',                                        // macOS metadata
+            },
+
+            /**
+             * App bundle name → icon name mapping
+             * Maps .app directory names to specific app icons
+             */
+            APP_BUNDLES: {
+                // Browsers
+                'Google Chrome': 'chrome',
+                'Firefox': 'firefox',
+                'Safari': 'safari',
+                'Vivaldi': 'vivaldi',
+                // Dev tools
+                'Visual Studio Code': 'vscode',
+                'iTerm': 'iterm2',
+                'Terminal': 'terminal',
+                'Xcode': 'xcode',
+                'Docker': 'docker-app',
+                'Postman': 'postman',
+                'Sublime Text': 'sublime',
+                'Cursor': 'cursor',
+                'Alacritty': 'alacritty',
+                'BBEdit': 'text',
+                'Raycast': 'raycast',
+                // Communication
+                'Slack': 'slack',
+                'Discord': 'discord',
+                'Zoom': 'zoom',
+                'Telegram': 'telegram',
+                // Media
+                'Spotify': 'spotify',
+                'VLC': 'vlc',
+                'Audacity': 'audacity',
+                // Productivity
+                'Notion': 'notion',
+                'Obsidian': 'obsidian',
+                'Figma': 'figma',
+                '1Password': '1password',
+                'Google Docs': 'googledocs',
+                'Google Drive': 'googledrive',
+                'Google Sheets': 'googlesheets',
+                'Google Slides': 'googledocs',
+                // Security
+                'Okta Verify': 'okta',
+                'Dark Reader for Safari': 'darkreader',
+                // Games
+                'Steam': 'steam',
+                // 3D
+                'Blender': 'blender-app',
+                // Microsoft
+                'Microsoft Word': 'msword',
+                'Microsoft Excel': 'msexcel',
+                'Microsoft PowerPoint': 'mspowerpoint',
+                // Apple apps
+                'Final Cut Pro': 'finalcut',
+                'Pages': 'apple-app',
+                'Numbers': 'apple-app',
+                'Keynote': 'apple-app',
+                'Compressor': 'apple-app',
+                'GarageBand': 'apple-app',
+                'Logic Pro': 'apple-app',
+                // Creative
+                'Pixelmator Pro': 'apple-app',
+                'Logoist 4': 'apple-app',
+                'Affinity Designer': 'affinitydesigner',
+                'Affinity Photo': 'affinityphoto',
+                // SQL client
+                'Falcon': 'falcon',
+            },
+
+            /**
+             * Special directory/bundle → icon name mapping
+             * For .bundle, .photoslibrary, node_modules, etc.
+             */
+            SPECIAL_DIRS: {
+                // macOS bundles
+                'Google Chrome': 'chrome',  // for .bundle
+                // Photo libraries
+                'photoslibrary': 'photoslibrary',
+                'musiclibrary': 'audio',
+                'tvlibrary': 'video',
+                // Dev directories
+                'node_modules': 'nodejs',
+                '__pycache__': 'python',
+                '.venv': 'python',
+                'venv': 'python',
+                '.git': 'github',
+            },
+
+            /** Texture atlas state */
+            atlas: null,           // WebGL texture
+            atlasSize: 0,          // Grid size (e.g., 8 = 8x8 grid)
+            iconSize: 256,         // Size of each icon in atlas (higher = better quality)
+            iconToIndex: new Map(), // icon name → atlas index
+
+            /**
+             * Get icon name for a filename.
+             * Checks app bundles first, then file extensions.
+             * @param {string} filename
+             * @returns {string|null} Icon name or null if no mapping
+             */
+            getIconName(filename) {
+                // Check for .app bundles first
+                if (filename.endsWith('.app')) {
+                    const appName = filename.slice(0, -4); // Remove .app
+                    if (this.APP_BUNDLES[appName]) {
+                        return this.APP_BUNDLES[appName];
+                    }
+                    return 'macos-app'; // Generic macOS app icon
+                }
+                // Check for .bundle (Chrome, etc.)
+                if (filename.endsWith('.bundle')) {
+                    const bundleName = filename.slice(0, -7); // Remove .bundle
+                    if (this.SPECIAL_DIRS[bundleName]) {
+                        return this.SPECIAL_DIRS[bundleName];
+                    }
+                    return 'bundle';  // Gift icon for generic bundles
+                }
+                // Check for photo/music/tv libraries
+                if (filename.endsWith('.photoslibrary')) return 'photoslibrary';
+                if (filename.endsWith('.musiclibrary')) return 'audio';
+                if (filename.endsWith('.tvlibrary')) return 'video';
+                // Check for macOS framework bundles
+                if (filename.endsWith('.framework')) return 'framework';
+                // Check for special directories (node_modules, __pycache__, etc.)
+                if (this.SPECIAL_DIRS[filename]) {
+                    return this.SPECIAL_DIRS[filename];
+                }
+                const dot = filename.lastIndexOf('.');
+                if (dot <= 0) return null;
+                const ext = filename.slice(dot + 1).toLowerCase();
+                if (this.EXTENSIONS[ext]) return this.EXTENSIONS[ext];
+                // Generate text icon for short extensions (3 chars or less)
+                if (ext.length <= 3 && ext.length > 0) {
+                    return '_ext_' + ext.toUpperCase();
+                }
+                return null;
+            },
+
+            /**
+             * Get atlas index for a filename (0 = no icon).
+             * @param {string} filename
+             * @returns {number} Atlas index (1-based), 0 if no icon
+             */
+            getAtlasIndex(filename) {
+                const iconName = this.getIconName(filename);
+                if (!iconName) return 0;
+                return this.iconToIndex.get(iconName) || 0;
+            },
+
+            /**
+             * Build texture atlas from unique icon names.
+             * @param {WebGL2RenderingContext} gl
+             * @param {string[]} iconNames - Unique icon names to load
+             * @param {function} onProgress - Progress callback(loaded, total)
+             * @returns {Promise<void>}
+             */
+            async buildAtlas(gl, iconNames, onProgress) {
+                const size = Math.ceil(Math.sqrt(iconNames.length + 1)); // +1 for empty slot 0
+                const iconPx = this.iconSize;
+                const atlasPx = size * iconPx;
+
+                // Create offscreen canvas for atlas
+                const canvas = document.createElement('canvas');
+                canvas.width = atlasPx;
+                canvas.height = atlasPx;
+                const ctx = canvas.getContext('2d');
+
+                // Slot 0 is empty (transparent)
+                this.iconToIndex.clear();
+                let loaded = 0;
+
+                // Load and draw each icon from local assets or generate text icons
+                for (let i = 0; i < iconNames.length; i++) {
+                    const name = iconNames[i];
+                    const idx = i + 1; // 1-based index stored in iconToIndex
+                    // Draw at 0-based position so shader lookup matches
+                    const col = i % size;
+                    const row = Math.floor(i / size);
+                    const x = col * iconPx;
+                    const y = row * iconPx;
+
+                    // Check if this is a text-based icon for unknown extension
+                    if (name.startsWith('_ext_')) {
+                        const ext = name.slice(5); // Remove '_ext_' prefix
+                        // Draw text icon with extension name
+                        ctx.save();
+                        ctx.fillStyle = '#FFFFFF';
+                        ctx.font = `bold ${iconPx * 0.4}px -apple-system, sans-serif`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(ext, x + iconPx / 2, y + iconPx / 2);
+                        ctx.restore();
+                        this.iconToIndex.set(name, idx);
+                    } else {
+                        try {
+                            // Load from local assets folder
+                            const url = `assets/icons/${name}.svg`;
+                            const response = await fetch(url);
+                            if (response.ok) {
+                                const svgText = await response.text();
+                                const blob = new Blob([svgText], { type: 'image/svg+xml' });
+                                const img = new Image();
+                                img.src = URL.createObjectURL(blob);
+                                await new Promise((resolve, reject) => {
+                                    img.onload = resolve;
+                                    img.onerror = reject;
+                                });
+                                ctx.drawImage(img, x, y, iconPx, iconPx);
+                                URL.revokeObjectURL(img.src);
+                                this.iconToIndex.set(name, idx);
+                            }
+                        } catch (err) {
+                            console.warn(`Failed to load icon "${name}":`, err.message || err);
+                        }
+                    }
+
+                    loaded++;
+                    if (onProgress) onProgress(loaded, iconNames.length);
+                }
+
+                // Upload to WebGL texture
+                this.atlasSize = size;
+                this.atlas = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, this.atlas);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            },
+
+            /**
+             * Collect unique icon names from filenames.
+             * @param {string[]} filenames
+             * @returns {string[]} Unique icon names
+             */
+            getUniqueIcons(filenames) {
+                const icons = new Set();
+                for (const name of filenames) {
+                    const icon = this.getIconName(name);
+                    if (icon) icons.add(icon);
+                }
+                return [...icons];
+            }
         };
 
         // Pre-parse colors to RGB for faster drawing
@@ -399,7 +1140,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             },
 
             /**
-             * @pure Truncate filename in the middle, preserving extension.
+             * @pure Truncate filename in the middle, preserving extension when possible.
+             * Falls back to truncating extension if space is too tight.
              * @param {string} name - Filename to truncate
              * @param {function} measureFn - Function that returns width of text
              * @param {number} maxWidth - Maximum allowed width
@@ -415,7 +1157,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 const ext = hasExt ? name.slice(dotIdx) : '';
                 const base = hasExt ? name.slice(0, dotIdx) : name;
 
-                // Binary search for how many chars we can keep
+                // Try to fit with extension first
                 let lo = 1, hi = base.length - 1;
                 while (lo < hi) {
                     const mid = Math.ceil((lo + hi) / 2);
@@ -428,9 +1170,30 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     }
                 }
 
-                if (lo < 2) return base[0] + '…' + ext;
+                // Check if minimal with extension fits
+                const minWithExt = base[0] + '…' + ext;
+                if (measureFn(minWithExt) <= maxWidth) {
+                    if (lo < 2) return minWithExt;
+                    const half = Math.floor(lo / 2);
+                    return base.slice(0, half) + '…' + base.slice(-(lo - half)) + ext;
+                }
+
+                // Extension doesn't fit - truncate the whole name without preserving ext
+                const fullName = name;
+                lo = 1; hi = fullName.length - 1;
+                while (lo < hi) {
+                    const mid = Math.ceil((lo + hi) / 2);
+                    const half = Math.floor(mid / 2);
+                    const candidate = fullName.slice(0, half) + '…' + fullName.slice(-(mid - half));
+                    if (measureFn(candidate) <= maxWidth) {
+                        lo = mid;
+                    } else {
+                        hi = mid - 1;
+                    }
+                }
+                if (lo < 2) return fullName[0] + '…';
                 const half = Math.floor(lo / 2);
-                return base.slice(0, half) + '…' + base.slice(-(lo - half)) + ext;
+                return fullName.slice(0, half) + '…' + fullName.slice(-(lo - half));
             }
         };
 
@@ -486,11 +1249,6 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 for (let j = 0; j < buildDepth; j++) {
                     const part = parts[j];
                     const isLeaf = j === parts.length - 1 || j === opaqueDepth;
-
-                    // If current was previously a leaf but we need to traverse deeper, convert to branch
-                    if (current.children === null) {
-                        current.children = {};
-                    }
 
                     if (!current.children[part]) {
                         current.children[part] = {
@@ -735,6 +1493,291 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 }
 
                 return null;
+            },
+
+            /**
+             * @pure Collect all leaf node names from a tree.
+             * @example TreeTraversal.collectLeafNames(root) // => ['file.txt', 'Photos.photoslibrary']
+             */
+            collectLeafNames(node) {
+                const names = [];
+                const traverse = (n) => {
+                    if (!n.children || n.children.length === 0) {
+                        names.push(n.name);
+                    } else {
+                        for (const child of n.children) {
+                            traverse(child);
+                        }
+                    }
+                };
+                traverse(node);
+                return names;
+            }
+        };
+
+        /**
+         * SunburstLayout - Pure functions for sunburst arc calculations.
+         * @pure All methods are pure functions.
+         */
+        const SunburstLayout = {
+            /** Cache for path -> colorIdx to ensure consistency */
+            colorCache: new Map(),
+
+            /** Ring width configuration */
+            FULL_WIDTH_RINGS: 10,   // First N rings are full width
+            RING_WIDTH_SCALE: 0.5,  // Scale factor for ring thickness (1.0 = fill available space)
+            DECAY_FACTOR: 0.75,     // Each subsequent ring is this fraction of previous (higher = see deeper)
+            MIN_RING_WIDTH: 1,      // Minimum ring width in pixels
+
+            /**
+             * @pure Get consistent color index for a node path.
+             * Uses path hash so folders keep their color when drilling.
+             */
+            colorForPath(path) {
+                if (this.colorCache.has(path)) {
+                    return this.colorCache.get(path);
+                }
+                const idx = Math.abs(ColorUtils.hash(path)) % Config.COLORS.length;
+                this.colorCache.set(path, idx);
+                return idx;
+            },
+
+            /**
+             * @pure Calculate ring width for a given depth.
+             * Full width for first N rings, then exponential decay.
+             */
+            getRingWidth(depth, baseWidth) {
+                if (depth < this.FULL_WIDTH_RINGS) {
+                    return baseWidth;
+                }
+                const decayDepth = depth - this.FULL_WIDTH_RINGS;
+                return Math.max(this.MIN_RING_WIDTH, baseWidth * Math.pow(this.DECAY_FACTOR, decayDepth + 1));
+            },
+
+            /**
+             * @pure Calculate cumulative radius at start of a depth level.
+             */
+            getRadiusAtDepth(depth, innerRadius, baseWidth) {
+                let r = innerRadius;
+                for (let d = 0; d < depth; d++) {
+                    r += this.getRingWidth(d, baseWidth);
+                }
+                return r;
+            },
+
+            /**
+             * @pure Calculate arcs for sunburst visualization.
+             * Includes the root node as depth 0 (full 360° ring).
+             * Ring widths decay exponentially after FULL_WIDTH_RINGS.
+             */
+            calculateArcs(node, centerX, centerY, innerRadius, baseRingWidth, maxDepth) {
+                const arcs = [];
+                const TAU = Math.PI * 2;
+                const MIN_ANGLE = 0.3 * (Math.PI / 180);
+
+                const traverse = (n, depth, startAngle, endAngle) => {
+                    if (depth > maxDepth) return;
+                    const angleSpan = endAngle - startAngle;
+                    if (angleSpan < MIN_ANGLE) return;
+
+                    const r0 = this.getRadiusAtDepth(depth, innerRadius, baseRingWidth);
+                    const ringW = this.getRingWidth(depth, baseRingWidth);
+                    const r1 = r0 + ringW;
+                    const colorIdx = this.colorForPath(n.path);
+
+                    arcs.push({
+                        node: n,
+                        path: n.path,
+                        depth,
+                        startAngle,
+                        endAngle,
+                        innerRadius: r0,
+                        outerRadius: r1,
+                        colorIdx,
+                        centerX,
+                        centerY
+                    });
+
+                    if (n.children && n.children.length > 0) {
+                        let childStart = startAngle;
+                        for (const child of n.children) {
+                            const childSpan = (child.size / n.size) * angleSpan;
+                            traverse(child, depth + 1, childStart, childStart + childSpan);
+                            childStart += childSpan;
+                        }
+                    }
+                };
+
+                // Add root as depth 0 (full 360° innermost ring)
+                const rootWidth = this.getRingWidth(0, baseRingWidth);
+                arcs.push({
+                    node: node,
+                    path: node.path,
+                    depth: 0,
+                    startAngle: -Math.PI / 2,
+                    endAngle: -Math.PI / 2 + TAU,
+                    innerRadius: innerRadius,
+                    outerRadius: innerRadius + rootWidth,
+                    colorIdx: this.colorForPath(node.path),
+                    centerX,
+                    centerY,
+                    isRoot: true
+                });
+
+                // Children start at depth 1
+                if (node.children && node.children.length > 0) {
+                    let childStart = -Math.PI / 2;
+                    for (const child of node.children) {
+                        const childSpan = (child.size / node.size) * TAU;
+                        traverse(child, 1, childStart, childStart + childSpan);
+                        childStart += childSpan;
+                    }
+                }
+
+                return arcs;
+            },
+
+            /**
+             * @pure Hit test - skip the root ring (depth 0, full circle)
+             */
+            hitTest(x, y, arcs, centerX, centerY) {
+                const dx = x - centerX;
+                const dy = y - centerY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                let angle = Math.atan2(dy, dx);
+
+                let hit = null;
+                for (const arc of arcs) {
+                    // Skip root ring for hit testing (it's just visual)
+                    if (arc.isRoot) continue;
+
+                    if (dist >= arc.innerRadius && dist < arc.outerRadius) {
+                        let a = angle;
+                        let start = arc.startAngle;
+                        let end = arc.endAngle;
+
+                        while (a < start) a += Math.PI * 2;
+                        while (a > end && end - start < Math.PI * 2) a -= Math.PI * 2;
+
+                        if (a >= start && a < end) {
+                            hit = arc;
+                        }
+                    }
+                }
+                return hit;
+            },
+
+            /** @pure Check if point is in center circle. */
+            isInCenter(x, y, centerX, centerY, radius) {
+                const dx = x - centerX;
+                const dy = y - centerY;
+                return dx * dx + dy * dy < radius * radius;
+            },
+
+            /** @pure Linear interpolate a value */
+            lerp(a, b, t) {
+                return a + (b - a) * t;
+            },
+
+            /** @pure EaseInOutQuad */
+            easeInOutQuad(t) {
+                return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+            }
+        };
+
+        /**
+         * IcicleLayout - Pure functions for icicle chart layout.
+         * Root at top, full width. Children below, width proportional to size.
+         * @pure All methods are pure functions.
+         */
+        const IcicleLayout = {
+            ROW_HEIGHT: 24,
+
+            /** Minimum rect width before merging into "N smaller items" */
+            MERGE_THRESHOLD: 2,
+
+            /**
+             * @pure Calculate rectangles for icicle visualization.
+             * Returns array of { x, y, w, h, node, depth }
+             * Tiny children are merged into one "N smaller items" rect.
+             * Merged children still get traversed (tree continues below).
+             */
+            calculateRects(node, width) {
+                const rects = [];
+                const rowHeight = this.ROW_HEIGHT;
+                const mergeThreshold = this.MERGE_THRESHOLD;
+
+                const traverse = (n, x, w, depth, skipOwnRect = false) => {
+                    const y = depth * rowHeight;
+
+                    // Add rect for this node (unless it's a merged child - those are represented by merge rect)
+                    if (!skipOwnRect) {
+                        rects.push({
+                            x, y, w, h: rowHeight,
+                            node: n,
+                            depth,
+                            colorIdx: Math.abs(ColorUtils.hash(n.path)) % Config.COLORS.length
+                        });
+                    }
+
+                    if (n.children && n.children.length > 0) {
+                        let childX = x;
+                        let mergedChildren = [];
+                        let mergeStartX = null;
+
+                        for (const child of n.children) {
+                            const childW = (child.size / n.size) * w;
+
+                            if (childW >= mergeThreshold) {
+                                traverse(child, childX, childW, depth + 1, false);
+                            } else {
+                                // Collect for merge
+                                if (mergeStartX === null) mergeStartX = childX;
+                                mergedChildren.push({ child, x: childX, w: childW });
+                                // Traverse children of merged item (but skip its own rect)
+                                traverse(child, childX, childW, depth + 1, true);
+                            }
+                            childX += childW;
+                        }
+
+                        // Add merged rect if any tiny children
+                        if (mergedChildren.length > 0 && mergeStartX !== null) {
+                            const mergeW = x + w - mergeStartX;
+                            rects.push({
+                                x: mergeStartX,
+                                y: (depth + 1) * rowHeight,
+                                w: mergeW,
+                                h: rowHeight,
+                                node: {
+                                    name: `${mergedChildren.length} smaller`,
+                                    path: n.path + '/_merged',
+                                    size: mergedChildren.reduce((sum, m) => sum + m.child.size, 0)
+                                },
+                                depth: depth + 1,
+                                colorIdx: 0,
+                                isMerged: true,
+                                mergedChildren: mergedChildren
+                            });
+                        }
+                    }
+                };
+
+                traverse(node, 0, width, 0, false);
+                return rects;
+            },
+
+            /**
+             * @pure Hit test a point against icicle rects.
+             */
+            hitTest(rects, x, y) {
+                // Iterate in reverse to find topmost (deepest) hit
+                for (let i = rects.length - 1; i >= 0; i--) {
+                    const r = rects[i];
+                    if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+                        return r;
+                    }
+                }
+                return null;
             }
         };
 
@@ -804,13 +1847,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             const padX = Config.LABEL_PADDING_X * scale;
             const padY = Config.LABEL_PADDING_Y * scale;
 
-            // Set up text style once
-            textCtx.fillStyle = 'rgba(255,255,255,0.9)';
-            textCtx.font = `${11 * scale}px -apple-system, BlinkMacSystemFont, sans-serif`;
-            textCtx.shadowColor = 'rgba(0,0,0,0.8)';
-            textCtx.shadowBlur = 2 * scale;
-            textCtx.shadowOffsetX = 0;
-            textCtx.shadowOffsetY = scale;
+            // Apply shared text style
+            RenderStyle.apply(textCtx, RenderStyle.labelText(scale));
 
             const measureFn = t => textCtx.measureText(t).width;
             for (const { node, sx, sy, sw } of labels) {
@@ -818,8 +1856,11 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 textCtx.fillText(displayText, sx * scale + padX, sy * scale + padY);
             }
 
-            textCtx.shadowBlur = 0;
+            RenderStyle.clearShadow(textCtx);
         }
+
+        // Cache for treemap layout - invalidated on node or size change
+        const treemapCache = { node: null, width: 0, height: 0, rects: null };
 
         async function renderTreemap(node) {
             currentNode = node;
@@ -833,10 +1874,23 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             Format.sizeCanvas(canvas, canvasCSSWidth, canvasCSSHeight, scale);
             Format.sizeCanvas(textCanvas, canvasCSSWidth, canvasCSSHeight, scale);
 
-            // Collect all leaf rects (in CSS pixel space)
-            renderedRects = [];
-            const baseRect = { x: 0, y: 0, width: canvasCSSWidth, height: canvasCSSHeight };
-            collectLeafRects(node, baseRect, renderedRects);
+            // Use cached layout if node and size unchanged
+            if (treemapCache.node === node &&
+                treemapCache.width === canvasCSSWidth &&
+                treemapCache.height === canvasCSSHeight &&
+                treemapCache.rects) {
+                renderedRects = treemapCache.rects;
+            } else {
+                // Collect all leaf rects (in CSS pixel space)
+                renderedRects = [];
+                const baseRect = { x: 0, y: 0, width: canvasCSSWidth, height: canvasCSSHeight };
+                collectLeafRects(node, baseRect, renderedRects);
+                // Cache the result
+                treemapCache.node = node;
+                treemapCache.width = canvasCSSWidth;
+                treemapCache.height = canvasCSSHeight;
+                treemapCache.rects = renderedRects;
+            }
 
             // Initialize WebGL on first use
             if (!webglInitialized) {
@@ -865,20 +1919,27 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 
             /** Vertex shader - transforms rect corners using viewport */
             VERT_SRC: `#version 300 es
+                precision mediump float;
                 // Per-vertex: corner offset (0,0), (1,0), (0,1), (1,1)
                 in vec2 a_corner;
-                // Per-instance: rect position, size, color
+                // Per-instance: rect position, size, color, icon
                 in vec4 a_rect;  // x, y, w, h
                 in vec3 a_color;
+                in float a_iconIdx;  // atlas index (0 = no icon)
 
                 uniform vec2 u_resolution;
                 uniform float u_zoom;
                 uniform vec2 u_pan;
                 uniform float u_borderWidth;
+                uniform float u_atlasSize;  // grid size (e.g., 8)
 
                 out vec3 v_color;
                 out vec2 v_uv;
                 out float v_borderUV;
+                flat out vec2 v_iconCell;  // icon cell (col, row) in atlas - flat, not interpolated
+                flat out float v_hasIcon;  // 1.0 if has icon
+                flat out vec2 v_rectAspect; // rect width/height for aspect ratio correction
+                out float v_iconScale;     // how much of rect the icon covers
 
                 void main() {
                     // Calculate world position
@@ -892,19 +1953,45 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 
                     v_color = a_color;
                     v_uv = a_corner;
-                    // Border width in UV space (pixels / screen size)
+
+                    // Border width in UV space
                     float screenSize = min(a_rect.z, a_rect.w) * u_zoom;
                     v_borderUV = u_borderWidth / max(screenSize, 1.0);
+
+                    // Pass rect aspect ratio for icon scaling
+                    v_rectAspect = a_rect.zw;  // width, height
+
+                    // Icon cell in atlas (flat = same for all vertices of this instance)
+                    // Fade icon: full above 20px, fade 20->10px, gone below 10px
+                    float iconFade = smoothstep(10.0, 20.0, screenSize);
+                    v_hasIcon = (a_iconIdx > 0.5) ? iconFade : 0.0;
+                    if (a_iconIdx > 0.5) {
+                        float idx = a_iconIdx - 1.0;  // 0-based
+                        v_iconCell = vec2(mod(idx, u_atlasSize), floor(idx / u_atlasSize));
+                    } else {
+                        v_iconCell = vec2(0.0);
+                    }
+
+                    // Icon always covers fixed 40% of rect - scales perfectly with zoom
+                    v_iconScale = 0.4;
                 }
             `,
 
-            /** Fragment shader - applies gradient and border */
+            /** Fragment shader - gradient, border, and embossed icon */
             FRAG_SRC: `#version 300 es
                 precision mediump float;
                 in vec3 v_color;
                 in vec2 v_uv;
                 in float v_borderUV;
+                flat in vec2 v_iconCell;
+                flat in float v_hasIcon;
+                flat in vec2 v_rectAspect;
+                in float v_iconScale;
+
                 uniform float u_borderDarkness;
+                uniform sampler2D u_iconAtlas;
+                uniform float u_atlasSize;
+
                 out vec4 fragColor;
 
                 void main() {
@@ -913,6 +2000,42 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     vec3 dark = v_color * 0.6;
                     vec3 light = min(v_color * 1.3, vec3(1.0));
                     vec3 color = mix(dark, light, t);
+
+                    // Embossed icon in center with aspect ratio preservation
+                    // v_hasIcon is 0-1 fade value (smoothstep from 10-20px screen size)
+                    if (v_hasIcon > 0.01) {
+                        // Calculate aspect-corrected icon region
+                        // Icon is square, rect may not be - fit icon inside
+                        float rectW = v_rectAspect.x;
+                        float rectH = v_rectAspect.y;
+                        float minDim = min(rectW, rectH);
+
+                        // Scale factors to map rect UV to square icon UV
+                        vec2 aspectScale = vec2(rectW / minDim, rectH / minDim);
+
+                        // Map rect UV to icon-sized square region in center
+                        vec2 centered = (v_uv - 0.5) * aspectScale / v_iconScale;
+
+                        if (abs(centered.x) < 0.5 && abs(centered.y) < 0.5) {
+                            // Convert to 0-1 within icon cell
+                            vec2 iconLocal = centered + 0.5;
+                            // Calculate atlas UV from cell position
+                            vec2 atlasUV = (v_iconCell + iconLocal) / u_atlasSize;
+
+                            // Sample icon with slight offset for emboss shadow
+                            float offset = 2.0 / (u_atlasSize * 256.0);  // ~2 pixels in atlas
+                            vec4 iconShadow = texture(u_iconAtlas, atlasUV + vec2(offset, offset));
+                            vec4 iconMain = texture(u_iconAtlas, atlasUV);
+
+                            // White emboss effect with fade: shadow darkens slightly, main adds white
+                            float shadowAlpha = iconShadow.a * 0.12 * v_hasIcon;
+                            float mainAlpha = iconMain.a * 0.25 * v_hasIcon;
+
+                            // Apply emboss: slight shadow, then white highlight
+                            color = mix(color, color * 0.85, shadowAlpha);
+                            color = mix(color, vec3(1.0), mainAlpha);
+                        }
+                    }
 
                     // Thin dark border
                     float edge = min(min(v_uv.x, v_uv.y), min(1.0 - v_uv.x, 1.0 - v_uv.y));
@@ -948,11 +2071,14 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     a_corner: gl.getAttribLocation(program, 'a_corner'),
                     a_rect: gl.getAttribLocation(program, 'a_rect'),
                     a_color: gl.getAttribLocation(program, 'a_color'),
+                    a_iconIdx: gl.getAttribLocation(program, 'a_iconIdx'),
                     u_resolution: gl.getUniformLocation(program, 'u_resolution'),
                     u_zoom: gl.getUniformLocation(program, 'u_zoom'),
                     u_pan: gl.getUniformLocation(program, 'u_pan'),
                     u_borderWidth: gl.getUniformLocation(program, 'u_borderWidth'),
-                    u_borderDarkness: gl.getUniformLocation(program, 'u_borderDarkness')
+                    u_borderDarkness: gl.getUniformLocation(program, 'u_borderDarkness'),
+                    u_atlasSize: gl.getUniformLocation(program, 'u_atlasSize'),
+                    u_iconAtlas: gl.getUniformLocation(program, 'u_iconAtlas')
                 };
 
                 // Create corner buffer (quad vertices)
@@ -966,7 +2092,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 this.buffers = {
                     corner: cornerBuffer,
                     rect: gl.createBuffer(),
-                    color: gl.createBuffer()
+                    color: gl.createBuffer(),
+                    iconIdx: gl.createBuffer()
                 };
 
                 // Create VAO
@@ -989,6 +2116,12 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 gl.enableVertexAttribArray(this.locs.a_color);
                 gl.vertexAttribPointer(this.locs.a_color, 3, gl.FLOAT, false, 0, 0);
                 gl.vertexAttribDivisor(this.locs.a_color, 1);
+
+                // Icon index attribute (per-instance)
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.iconIdx);
+                gl.enableVertexAttribArray(this.locs.a_iconIdx);
+                gl.vertexAttribPointer(this.locs.a_iconIdx, 1, gl.FLOAT, false, 0, 0);
+                gl.vertexAttribDivisor(this.locs.a_iconIdx, 1);
 
                 gl.bindVertexArray(null);
             },
@@ -1013,6 +2146,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 // Build typed arrays
                 const rectData = new Float32Array(rects.length * 4);
                 const colorData = new Float32Array(rects.length * 3);
+                const iconData = new Float32Array(rects.length);
 
                 for (let i = 0; i < rects.length; i++) {
                     const r = rects[i];
@@ -1025,6 +2159,9 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     colorData[i * 3 + 0] = cr / 255;
                     colorData[i * 3 + 1] = cg / 255;
                     colorData[i * 3 + 2] = cb / 255;
+
+                    // Icon atlas index (0 = no icon)
+                    iconData[i] = FileIcons.getAtlasIndex(r.item.name);
                 }
 
                 // Upload to GPU
@@ -1033,6 +2170,9 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 
                 gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.color);
                 gl.bufferData(gl.ARRAY_BUFFER, colorData, gl.STATIC_DRAW);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.iconIdx);
+                gl.bufferData(gl.ARRAY_BUFFER, iconData, gl.STATIC_DRAW);
             },
 
             /** Render all rects with current viewport */
@@ -1056,6 +2196,14 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 gl.uniform1f(this.locs.u_borderWidth, Config.BORDER_WIDTH);
                 gl.uniform1f(this.locs.u_borderDarkness, Config.BORDER_DARKNESS);
 
+                // Icon atlas
+                gl.uniform1f(this.locs.u_atlasSize, FileIcons.atlasSize || 1);
+                if (FileIcons.atlas) {
+                    gl.activeTexture(gl.TEXTURE0);
+                    gl.bindTexture(gl.TEXTURE_2D, FileIcons.atlas);
+                    gl.uniform1i(this.locs.u_iconAtlas, 0);
+                }
+
                 // Draw all rects in one call
                 gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.rectCount);
 
@@ -1065,19 +2213,962 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 
         let webglInitialized = false;
 
-        // Hit-testing for tooltip
-        canvas.addEventListener('mousemove', (e) => {
-            const rect = canvas.getBoundingClientRect();
-            const mx = e.clientX - rect.left;
-            const my = e.clientY - rect.top;
+        /**
+         * SunburstRenderer - Stateful Canvas2D renderer for sunburst visualization.
+         * Two-phase animation: (1) fade siblings out/new content in, (2) expand angles
+         */
+        const SunburstRenderer = {
+            canvas: null,
+            ctx: null,
+            arcs: [],
+            rootNode: null,
+            displayNode: null,
+            navigationStack: [],
+            hoveredArc: null,
+            innerRadius: 60,
+            baseRingWidth: 0,
+            maxDepth: 50,  // High limit - exponential decay handles the space
+            centerX: 0,
+            centerY: 0,
+            width: 0,
+            height: 0,
 
-            // Convert screen coords to world coords for hit testing
-            const world = Viewport.screenToWorld(mx, my, Viewport.zoom, Viewport.panX, Viewport.panY);
+            // Animation state
+            animating: false,
+            animationId: null,
+
+            init(canvas) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+            },
+
+            setRoot(node, width, height) {
+                this.rootNode = node;
+                this.displayNode = node;
+                this.navigationStack = [];
+                this.width = width;
+                this.height = height;
+                this.setupCanvas(width, height);
+                this.arcs = this.calculateArcsForNode(node);
+                this.render();
+            },
+
+            setupCanvas(width, height) {
+                const scale = window.devicePixelRatio || 1;
+                this.canvas.width = width * scale;
+                this.canvas.height = height * scale;
+                this.canvas.style.width = width + 'px';
+                this.canvas.style.height = height + 'px';
+
+                this.centerX = width / 2;
+                this.centerY = height / 2;
+                const maxRadius = Math.min(width, height) / 2 - 20;
+
+                // Calculate base ring width so that full-width rings + decayed rings fit
+                // Full rings take: FULL_WIDTH_RINGS * baseWidth
+                // Decayed rings converge to: baseWidth * DECAY / (1 - DECAY) approximately
+                const fullRings = SunburstLayout.FULL_WIDTH_RINGS;
+                const decay = SunburstLayout.DECAY_FACTOR;
+                const decaySum = decay / (1 - decay);  // Geometric series sum
+                const totalFactor = fullRings + decaySum;
+                const naturalWidth = (maxRadius - this.innerRadius) / totalFactor;
+                // Apply scale factor to control ring thickness
+                this.baseRingWidth = naturalWidth * SunburstLayout.RING_WIDTH_SCALE;
+            },
+
+            calculateArcsForNode(node) {
+                return SunburstLayout.calculateArcs(
+                    node, this.centerX, this.centerY,
+                    this.innerRadius, this.baseRingWidth, this.maxDepth
+                );
+            },
+
+            calculateLayout(width, height) {
+                this.width = width;
+                this.height = height;
+                this.setupCanvas(width, height);
+                this.arcs = this.calculateArcsForNode(this.displayNode);
+            },
+
+            render(arcsToRender = null) {
+                const ctx = this.ctx;
+                const scale = window.devicePixelRatio || 1;
+                const arcs = arcsToRender || this.arcs;
+
+                // Clear at base transform
+                ctx.setTransform(scale, 0, 0, scale, 0, 0);
+                ctx.fillStyle = '#1a1a2e';
+                ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                // Apply viewport transform - SAME math as treemap: screen = world * zoom + pan
+                const vp = SunburstViewport;
+                ctx.translate(vp.panX, vp.panY);
+                ctx.scale(vp.zoom, vp.zoom);
+
+                // Sort by depth so inner rings draw first
+                const sorted = [...arcs].sort((a, b) => a.depth - b.depth);
+                for (const arc of sorted) {
+                    if (arc.opacity !== undefined && arc.opacity < 0.01) continue;
+                    this.drawArc(arc, !this.animating && arc === this.hoveredArc, arc.opacity);
+                }
+
+                // Draw text labels on top of arcs
+                for (const arc of sorted) {
+                    if (arc.opacity !== undefined && arc.opacity < 0.01) continue;
+                    this.drawArcText(arc, arc.opacity !== undefined ? arc.opacity : 1);
+                }
+
+                this.drawCenter();
+            },
+
+            drawArc(arc, highlighted, opacity = 1) {
+                const ctx = this.ctx;
+                const angleSpan = arc.endAngle - arc.startAngle;
+                if (angleSpan < 0.001 || arc.outerRadius <= arc.innerRadius) return;
+
+                const [r, g, b] = colorsRGB[arc.colorIdx];
+
+                // Each segment gets its own vertical gradient (dark at bottom, light at top)
+                const gradient = ctx.createLinearGradient(
+                    this.centerX, this.centerY + arc.outerRadius,  // bottom (dark)
+                    this.centerX, this.centerY - arc.outerRadius   // top (light)
+                );
+                const baseColor = highlighted
+                    ? [Math.min(255, r + 40), Math.min(255, g + 40), Math.min(255, b + 40)]
+                    : [r, g, b];
+
+                gradient.addColorStop(0, `rgba(${Math.round(baseColor[0] * 0.7)}, ${Math.round(baseColor[1] * 0.7)}, ${Math.round(baseColor[2] * 0.7)}, ${opacity})`);
+                gradient.addColorStop(1, `rgba(${Math.min(255, Math.round(baseColor[0] * 1.2))}, ${Math.min(255, Math.round(baseColor[1] * 1.2))}, ${Math.min(255, Math.round(baseColor[2] * 1.2))}, ${opacity})`);
+
+                ctx.beginPath();
+                ctx.arc(this.centerX, this.centerY, arc.outerRadius, arc.startAngle, arc.endAngle);
+                ctx.arc(this.centerX, this.centerY, arc.innerRadius, arc.endAngle, arc.startAngle, true);
+                ctx.closePath();
+
+                ctx.fillStyle = gradient;
+                ctx.fill();
+
+                ctx.strokeStyle = `rgba(0, 0, 0, ${0.3 * opacity})`;
+                ctx.lineWidth = 0.5;
+                ctx.stroke();
+            },
+
+            drawArcText(arc, opacity = 1) {
+                const ctx = this.ctx;
+                if (!arc.node || !arc.node.name) return;
+                if (opacity < 0.5) return; // Don't draw text for fading arcs
+
+                const angleSpan = arc.endAngle - arc.startAngle;
+                const ringHeight = arc.outerRadius - arc.innerRadius;
+
+                // Skip if arc is too small
+                if (angleSpan < 0.05 || ringHeight < 10) return;
+
+                const middleRadius = (arc.innerRadius + arc.outerRadius) / 2;
+                const arcLength = middleRadius * angleSpan;
+
+                // Skip if arc length is too short for any text
+                if (arcLength < 20) return;
+
+                ctx.save();
+
+                // Monospace font - uniform character width makes curved text simple
+                const fontSize = Math.max(8, Math.min(12, ringHeight * 0.55));
+                ctx.font = `${fontSize}px Menlo, Monaco, monospace`;
+                ctx.fillStyle = `rgba(255, 255, 255, ${0.9 * opacity})`;
+                ctx.textBaseline = 'middle';
+                ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
+                ctx.shadowBlur = 2;
+                ctx.shadowOffsetX = 1;
+                ctx.shadowOffsetY = 1;
+
+                const name = arc.node.name;
+                const charWidth = ctx.measureText('M').width; // All chars same width
+                const padding = 4;
+                const maxChars = Math.floor((arcLength - padding * 2) / charWidth);
+
+                if (maxChars < 1) { ctx.restore(); return; }
+
+                // Truncate if needed
+                let displayText = name;
+                if (name.length > maxChars) {
+                    if (maxChars <= 3) {
+                        displayText = name.substring(0, maxChars);
+                    } else {
+                        const half = Math.floor((maxChars - 1) / 2);
+                        displayText = name.substring(0, half) + '…' + name.slice(-(maxChars - half - 1));
+                    }
+                }
+
+                const midAngle = (arc.startAngle + arc.endAngle) / 2;
+                let normalizedMid = midAngle % (Math.PI * 2);
+                if (normalizedMid < 0) normalizedMid += Math.PI * 2;
+
+                // Flip text in bottom half so it's always readable
+                const flipText = normalizedMid > 0 && normalizedMid < Math.PI;
+                const direction = flipText ? -1 : 1;
+
+                // Calculate start angle to center text
+                const totalAngle = displayText.length * charWidth / middleRadius;
+                const startAngle = midAngle - direction * totalAngle / 2;
+
+                // Draw each character with uniform spacing
+                for (let i = 0; i < displayText.length; i++) {
+                    const charAngle = startAngle + direction * (i + 0.5) * charWidth / middleRadius;
+                    const x = this.centerX + Math.cos(charAngle) * middleRadius;
+                    const y = this.centerY + Math.sin(charAngle) * middleRadius;
+
+                    ctx.save();
+                    ctx.translate(x, y);
+                    ctx.rotate(charAngle + Math.PI / 2 + (flipText ? Math.PI : 0));
+                    ctx.fillText(displayText[i], -charWidth / 2, 0);
+                    ctx.restore();
+                }
+
+                ctx.restore();
+            },
+
+            drawCenter() {
+                const ctx = this.ctx;
+                const canGoBack = this.navigationStack.length > 0;
+
+                ctx.beginPath();
+                ctx.arc(this.centerX, this.centerY, this.innerRadius, 0, Math.PI * 2);
+
+                const gradient = ctx.createRadialGradient(
+                    this.centerX, this.centerY, 0,
+                    this.centerX, this.centerY, this.innerRadius
+                );
+                gradient.addColorStop(0, canGoBack ? 'rgba(108, 155, 207, 0.3)' : 'rgba(30, 30, 50, 0.8)');
+                gradient.addColorStop(1, canGoBack ? 'rgba(108, 155, 207, 0.1)' : 'rgba(30, 30, 50, 0.6)');
+                ctx.fillStyle = gradient;
+                ctx.fill();
+
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+
+                if (this.animating) return;
+
+                ctx.fillStyle = canGoBack ? 'rgba(108, 155, 207, 0.9)' : 'rgba(255, 255, 255, 0.6)';
+                ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+
+                const label = this.displayNode ? this.displayNode.name : '';
+                const maxWidth = this.innerRadius * 1.6;
+                const displayLabel = Format.middleTruncate(label, t => ctx.measureText(t).width, maxWidth);
+                ctx.fillText(displayLabel, this.centerX, this.centerY - 8);
+
+                if (this.displayNode) {
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+                    ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
+                    ctx.fillText(Format.bytes(this.displayNode.size), this.centerX, this.centerY + 8);
+                }
+
+                if (canGoBack) {
+                    ctx.fillStyle = 'rgba(108, 155, 207, 0.6)';
+                    ctx.font = '18px -apple-system, BlinkMacSystemFont, sans-serif';
+                    ctx.fillText('↑', this.centerX, this.centerY + 26);
+                }
+            },
+
+            handleMouseMove(x, y) {
+                if (this.animating) return null;
+
+                if (SunburstLayout.isInCenter(x, y, this.centerX, this.centerY, this.innerRadius)) {
+                    if (this.hoveredArc) {
+                        this.hoveredArc = null;
+                        this.render();
+                    }
+                    return this.navigationStack.length > 0 ? { node: this.displayNode, isCenter: true } : null;
+                }
+
+                const hit = SunburstLayout.hitTest(x, y, this.arcs, this.centerX, this.centerY);
+                if (hit !== this.hoveredArc) {
+                    this.hoveredArc = hit;
+                    this.render();
+                }
+                return hit ? { node: hit.node, isCenter: false } : null;
+            },
+
+            handleClick(x, y) {
+                if (this.animating) return false;
+
+                if (SunburstLayout.isInCenter(x, y, this.centerX, this.centerY, this.innerRadius)) {
+                    return this.drillUp();
+                }
+
+                const hit = SunburstLayout.hitTest(x, y, this.arcs, this.centerX, this.centerY);
+                if (hit && hit.node.children && hit.node.children.length > 0) {
+                    return this.drillDown(hit.node, hit);
+                }
+                return false;
+            },
+
+            /**
+             * Two-phase drill down animation:
+             * Phase 1: Fade out siblings, fade in new outer rings (angles stay fixed)
+             * Phase 2: Expand clicked segment and children to 360°
+             */
+            drillDown(node, clickedArc) {
+                const TAU = Math.PI * 2;
+                const fromArcs = this.arcs;
+                const toArcsRaw = this.calculateArcsForNode(node);
+
+                const clickedPath = node.path;
+                const clickedStart = clickedArc.startAngle;
+                const clickedEnd = clickedArc.endAngle;
+                const clickedSpan = clickedEnd - clickedStart;
+                const clickedDepth = clickedArc.depth;
+
+                // Save for back navigation
+                this.navigationStack.push({
+                    node: this.displayNode,
+                    arcs: fromArcs,
+                    clickedPath,
+                    clickedStart,
+                    clickedEnd,
+                    clickedDepth
+                });
+
+                this.displayNode = node;
+                this.hoveredArc = null;
+
+                // Build arc sets for animation
+                // "Staying" arcs: clicked segment and its descendants (visible in both views)
+                // "Leaving" arcs: siblings (fade out in phase 1)
+                // "Entering" arcs: new deeper content (fade in during phase 1)
+
+                const stayingArcs = [];  // {from, mid, to} - from=current, mid=after phase1, to=final
+                const leavingArcs = [];  // fade out
+                const enteringArcs = []; // fade in
+
+                const toByPath = new Map();
+                for (const a of toArcsRaw) toByPath.set(a.path, a);
+
+                for (const fromArc of fromArcs) {
+                    const isDescendant = fromArc.path === clickedPath || fromArc.path.startsWith(clickedPath + '/');
+
+                    if (isDescendant) {
+                        const toArc = toByPath.get(fromArc.path);
+                        if (toArc) {
+                            // Calculate mid-state: same angles as now, but new outer content will appear
+                            stayingArcs.push({
+                                from: { ...fromArc, opacity: 1 },
+                                to: { ...toArc, opacity: 1 }
+                            });
+                        }
+                    } else {
+                        // Sibling - fades out
+                        leavingArcs.push({ ...fromArc, opacity: 1 });
+                    }
+                }
+
+                // Find new arcs that weren't visible before
+                for (const toArc of toArcsRaw) {
+                    const wasVisible = fromArcs.some(f => f.path === toArc.path);
+                    if (!wasVisible) {
+                        // New arc - appears at its final angle but fades in
+                        // Position it relative to clicked segment's current angle during phase 1
+                        const relStart = (toArc.startAngle - (-Math.PI / 2)) / TAU;
+                        const relEnd = (toArc.endAngle - (-Math.PI / 2)) / TAU;
+                        const midStart = clickedStart + relStart * clickedSpan;
+                        const midEnd = clickedStart + relEnd * clickedSpan;
+
+                        // Depth offset: this arc will be further out during phase 1
+                        const offsetDepth = toArc.depth + clickedDepth;
+                        const midInner = SunburstLayout.getRadiusAtDepth(offsetDepth, this.innerRadius, this.baseRingWidth);
+                        const midOuter = midInner + SunburstLayout.getRingWidth(offsetDepth, this.baseRingWidth);
+
+                        enteringArcs.push({
+                            mid: {
+                                ...toArc,
+                                startAngle: midStart,
+                                endAngle: midEnd,
+                                innerRadius: midInner,
+                                outerRadius: midOuter,
+                                opacity: 1
+                            },
+                            to: { ...toArc, opacity: 1 }
+                        });
+                    }
+                }
+
+                // Animation phases
+                const phase1Duration = 200;  // ms - fade
+                const phase2Duration = 300;  // ms - expand
+                const totalDuration = phase1Duration + phase2Duration;
+
+                this.animating = true;
+                const startTime = performance.now();
+
+                const animate = (now) => {
+                    const elapsed = now - startTime;
+                    const t = Math.min(1, elapsed / totalDuration);
+                    const phase1T = Math.min(1, elapsed / phase1Duration);
+                    const phase2T = elapsed > phase1Duration
+                        ? Math.min(1, (elapsed - phase1Duration) / phase2Duration)
+                        : 0;
+
+                    const ease1 = SunburstLayout.easeInOutQuad(phase1T);
+                    const ease2 = SunburstLayout.easeInOutQuad(phase2T);
+
+                    const frameArcs = [];
+
+                    // Leaving arcs: fade out during phase 1
+                    for (const arc of leavingArcs) {
+                        frameArcs.push({ ...arc, opacity: 1 - ease1 });
+                    }
+
+                    // Staying arcs: keep angles during phase 1, expand during phase 2
+                    for (const { from, to } of stayingArcs) {
+                        // Phase 2: interpolate from current angles to final 360° angles
+                        frameArcs.push({
+                            ...to,
+                            startAngle: SunburstLayout.lerp(from.startAngle, to.startAngle, ease2),
+                            endAngle: SunburstLayout.lerp(from.endAngle, to.endAngle, ease2),
+                            innerRadius: SunburstLayout.lerp(from.innerRadius, to.innerRadius, ease2),
+                            outerRadius: SunburstLayout.lerp(from.outerRadius, to.outerRadius, ease2),
+                            opacity: 1
+                        });
+                    }
+
+                    // Entering arcs: fade in during phase 1 at mid position, move to final during phase 2
+                    for (const { mid, to } of enteringArcs) {
+                        frameArcs.push({
+                            ...to,
+                            startAngle: SunburstLayout.lerp(mid.startAngle, to.startAngle, ease2),
+                            endAngle: SunburstLayout.lerp(mid.endAngle, to.endAngle, ease2),
+                            innerRadius: SunburstLayout.lerp(mid.innerRadius, to.innerRadius, ease2),
+                            outerRadius: SunburstLayout.lerp(mid.outerRadius, to.outerRadius, ease2),
+                            opacity: ease1
+                        });
+                    }
+
+                    this.render(frameArcs);
+
+                    if (t < 1) {
+                        this.animationId = requestAnimationFrame(animate);
+                    } else {
+                        this.animating = false;
+                        this.animationId = null;
+                        this.arcs = toArcsRaw;
+                        this.render();
+                    }
+                };
+
+                if (this.animationId) cancelAnimationFrame(this.animationId);
+                this.animationId = requestAnimationFrame(animate);
+                return true;
+            },
+
+            /** Two-phase drill up animation (reverse of drill down) */
+            drillUp() {
+                if (this.navigationStack.length === 0) return false;
+
+                const prev = this.navigationStack.pop();
+                const TAU = Math.PI * 2;
+                const fromArcsRaw = this.arcs;
+                const toArcs = prev.arcs;
+
+                const clickedStart = prev.clickedStart;
+                const clickedEnd = prev.clickedEnd;
+                const clickedSpan = clickedEnd - clickedStart;
+                const clickedDepth = prev.clickedDepth;
+
+                this.displayNode = prev.node;
+                this.hoveredArc = null;
+
+                const toByPath = new Map();
+                for (const a of toArcs) toByPath.set(a.path, a);
+
+                const stayingArcs = [];
+                const leavingArcs = [];
+                const enteringArcs = [];
+
+                // Current arcs that will stay (exist in parent view)
+                for (const fromArc of fromArcsRaw) {
+                    const toArc = toByPath.get(fromArc.path);
+                    if (toArc) {
+                        stayingArcs.push({
+                            from: { ...fromArc, opacity: 1 },
+                            to: { ...toArc, opacity: 1 }
+                        });
+                    } else {
+                        // This arc won't exist in parent - it collapses and fades
+                        leavingArcs.push({
+                            from: { ...fromArc, opacity: 1 },
+                            mid: {
+                                ...fromArc,
+                                startAngle: SunburstLayout.lerp(clickedStart, clickedEnd,
+                                    (fromArc.startAngle - (-Math.PI/2)) / TAU),
+                                endAngle: SunburstLayout.lerp(clickedStart, clickedEnd,
+                                    (fromArc.endAngle - (-Math.PI/2)) / TAU),
+                                opacity: 1
+                            }
+                        });
+                    }
+                }
+
+                // Parent arcs that will appear (siblings)
+                for (const toArc of toArcs) {
+                    const wasVisible = fromArcsRaw.some(f => f.path === toArc.path);
+                    if (!wasVisible) {
+                        // Sibling coming back - starts collapsed at edge
+                        const midAngle = (toArc.startAngle + toArc.endAngle) / 2;
+                        const collapsePoint = midAngle < (clickedStart + clickedEnd) / 2
+                            ? clickedStart : clickedEnd;
+
+                        enteringArcs.push({
+                            mid: {
+                                ...toArc,
+                                startAngle: collapsePoint,
+                                endAngle: collapsePoint,
+                                innerRadius: this.innerRadius,
+                                outerRadius: this.innerRadius,
+                                opacity: 0
+                            },
+                            to: { ...toArc, opacity: 1 }
+                        });
+                    }
+                }
+
+                const phase1Duration = 300;  // collapse
+                const phase2Duration = 200;  // fade in siblings
+                const totalDuration = phase1Duration + phase2Duration;
+
+                this.animating = true;
+                const startTime = performance.now();
+
+                const animate = (now) => {
+                    const elapsed = now - startTime;
+                    const t = Math.min(1, elapsed / totalDuration);
+                    const phase1T = Math.min(1, elapsed / phase1Duration);
+                    const phase2T = elapsed > phase1Duration
+                        ? Math.min(1, (elapsed - phase1Duration) / phase2Duration)
+                        : 0;
+
+                    const ease1 = SunburstLayout.easeInOutQuad(phase1T);
+                    const ease2 = SunburstLayout.easeInOutQuad(phase2T);
+
+                    const frameArcs = [];
+
+                    // Staying arcs: collapse angles during phase 1
+                    for (const { from, to } of stayingArcs) {
+                        frameArcs.push({
+                            ...to,
+                            startAngle: SunburstLayout.lerp(from.startAngle, to.startAngle, ease1),
+                            endAngle: SunburstLayout.lerp(from.endAngle, to.endAngle, ease1),
+                            innerRadius: SunburstLayout.lerp(from.innerRadius, to.innerRadius, ease1),
+                            outerRadius: SunburstLayout.lerp(from.outerRadius, to.outerRadius, ease1),
+                            opacity: 1
+                        });
+                    }
+
+                    // Leaving arcs: collapse during phase 1, fade during phase 2
+                    for (const { from, mid } of leavingArcs) {
+                        frameArcs.push({
+                            ...from,
+                            startAngle: SunburstLayout.lerp(from.startAngle, mid.startAngle, ease1),
+                            endAngle: SunburstLayout.lerp(from.endAngle, mid.endAngle, ease1),
+                            opacity: 1 - ease2
+                        });
+                    }
+
+                    // Entering arcs: expand and fade in during phase 2
+                    for (const { mid, to } of enteringArcs) {
+                        frameArcs.push({
+                            ...to,
+                            startAngle: SunburstLayout.lerp(mid.startAngle, to.startAngle, ease1),
+                            endAngle: SunburstLayout.lerp(mid.endAngle, to.endAngle, ease1),
+                            innerRadius: SunburstLayout.lerp(mid.innerRadius, to.innerRadius, ease1),
+                            outerRadius: SunburstLayout.lerp(mid.outerRadius, to.outerRadius, ease1),
+                            opacity: ease2
+                        });
+                    }
+
+                    this.render(frameArcs);
+
+                    if (t < 1) {
+                        this.animationId = requestAnimationFrame(animate);
+                    } else {
+                        this.animating = false;
+                        this.animationId = null;
+                        this.arcs = toArcs;
+                        this.render();
+                    }
+                };
+
+                if (this.animationId) cancelAnimationFrame(this.animationId);
+                this.animationId = requestAnimationFrame(animate);
+                return true;
+            },
+
+            drillToRoot() {
+                if (this.navigationStack.length === 0) return false;
+                this.drillUp();
+                return true;
+            }
+        };
+
+        /**
+         * IcicleRenderer - Stateful Canvas2D renderer for icicle visualization.
+         */
+        const IcicleRenderer = {
+            canvas: null,
+            ctx: null,
+            rects: [],
+            rootNode: null,
+            displayNode: null,
+            navigationStack: [],
+            hoveredRect: null,
+            width: 0,
+            height: 0,
+
+            init(canvas) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+            },
+
+            setRoot(node, width, height) {
+                this.rootNode = node;
+                this.displayNode = node;
+                this.navigationStack = [];
+                this.width = width;
+                this.height = height;
+                this.setupCanvas(width, height);
+                this.rects = IcicleLayout.calculateRects(node, width);
+            },
+
+            setupCanvas(width, height) {
+                const scale = window.devicePixelRatio || 1;
+                this.canvas.width = width * scale;
+                this.canvas.height = height * scale;
+                this.canvas.style.width = width + 'px';
+                this.canvas.style.height = height + 'px';
+                this.width = width;
+                this.height = height;
+            },
+
+            calculateLayout(width, height) {
+                this.setupCanvas(width, height);
+                this.rects = IcicleLayout.calculateRects(this.displayNode, width);
+            },
+
+            render() {
+                const ctx = this.ctx;
+                const scale = window.devicePixelRatio || 1;
+                const vp = IcicleViewport;
+
+                ctx.setTransform(scale, 0, 0, scale, 0, 0);
+                ctx.imageSmoothingEnabled = false;  // Crisp rects, no anti-aliasing
+                ctx.fillStyle = '#1a1a2e';
+                ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                // Draw rects with transform
+                for (const r of this.rects) {
+                    const highlighted = r === this.hoveredRect;
+                    this.drawRect(r, highlighted);
+                }
+
+                // Draw labels WITHOUT horizontal stretch
+                for (const r of this.rects) {
+                    this.drawLabel(r);
+                }
+            },
+
+            drawRect(r, highlighted) {
+                const ctx = this.ctx;
+                const vp = IcicleViewport;
+
+                // Transform to screen
+                const screenX = Math.round(r.x * vp.zoom + vp.panX);
+                const screenY = Math.round(r.y + vp.panY);
+                const screenW = Math.round(r.w * vp.zoom);
+                const screenH = r.h;
+
+                // Cull off-screen
+                if (screenX + screenW < 0 || screenX > this.width ||
+                    screenY + screenH < 0 || screenY > this.height) return;
+
+                // Merged rect: check if should burst open
+                if (r.isMerged && r.mergedChildren) {
+                    // If largest merged child would be visible, burst open
+                    const largest = r.mergedChildren[0];
+                    if (largest && largest.w * vp.zoom >= IcicleLayout.MERGE_THRESHOLD) {
+                        // Burst: draw children individually
+                        for (const m of r.mergedChildren) {
+                            const cw = Math.round(m.w * vp.zoom);
+                            if (cw < 1) continue;
+                            const cx = Math.round(m.x * vp.zoom + vp.panX);
+                            const color = colorsRGB[Math.abs(ColorUtils.hash(m.child.path)) % Config.COLORS.length];
+                            ctx.fillStyle = RenderStyle.diagonalGradient(ctx, cx, screenY, cw, screenH, ...color);
+                            ctx.fillRect(cx, screenY, cw, screenH);
+                            ctx.strokeStyle = '#000';
+                            ctx.lineWidth = 1;
+                            ctx.strokeRect(cx + 0.5, screenY + 0.5, cw, screenH);
+                        }
+                        return;
+                    }
+                    // Still too small: just black fill, no stroke
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(screenX, screenY, screenW, screenH);
+                    return;
+                }
+
+                // Skip tiny non-merged rects
+                if (screenW < 1) return;
+
+                const [red, g, b] = colorsRGB[r.colorIdx];
+                const baseColor = highlighted
+                    ? RenderStyle.highlightRGB(red, g, b)
+                    : [red, g, b];
+
+                ctx.fillStyle = RenderStyle.diagonalGradient(ctx, screenX, screenY, screenW, screenH, ...baseColor);
+                ctx.fillRect(screenX, screenY, screenW, screenH);
+
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(screenX + 0.5, screenY + 0.5, screenW, screenH);
+            },
+
+            drawLabel(r) {
+                const ctx = this.ctx;
+                const vp = IcicleViewport;
+
+                // Transform rect coords to screen
+                const screenX = r.x * vp.zoom + vp.panX;
+                const screenY = r.y + vp.panY;
+                const screenW = r.w * vp.zoom;
+                const screenH = r.h;
+                const screenRight = screenX + screenW;
+
+                // Skip if completely off screen vertically
+                if (screenY + screenH < 0 || screenY > this.height) return;
+                // Skip if completely off screen horizontally
+                if (screenRight < 0 || screenX > this.width) return;
+
+                // Sticky label: pin to left edge if rect extends past it
+                const labelX = Math.max(0, screenX);
+                const visibleRight = Math.min(this.width, screenRight);
+                const visibleWidth = visibleRight - labelX;
+
+                // Skip if visible area too narrow for label
+                if (visibleWidth < RenderStyle.MIN_LABEL_WIDTH) return;
+
+                const padding = Config.LABEL_PADDING_X;
+                const maxWidth = visibleWidth - padding * 2;
+
+                // Apply shared text style (scale=1 for icicle)
+                RenderStyle.apply(ctx, RenderStyle.labelText(1));
+                ctx.textBaseline = 'middle';
+
+                // Build label text
+                let labelText = r.node.name;
+                if (r.isMerged && r.mergedChildren) {
+                    // Count how many merged children are "in view" (would be visible at current zoom)
+                    const inView = r.mergedChildren.filter(m =>
+                        m.w * IcicleViewport.zoom >= RenderStyle.SKIP_RECT_THRESHOLD
+                    ).length;
+                    labelText = `${r.mergedChildren.length} smaller` + (inView > 0 ? ` (${inView} in view)` : '');
+                }
+
+                const measureFn = t => ctx.measureText(t).width;
+                const displayText = Format.middleTruncate(labelText, measureFn, maxWidth);
+                ctx.fillText(displayText, labelX + padding, screenY + screenH / 2);
+
+                RenderStyle.clearShadow(ctx);
+            },
+
+            handleMouseMove(worldX, worldY) {
+                const hit = IcicleLayout.hitTest(this.rects, worldX, worldY);
+                if (hit !== this.hoveredRect) {
+                    this.hoveredRect = hit;
+                    this.render();
+                }
+                return hit ? { node: hit.node } : null;
+            },
+
+            handleClick(worldX, worldY) {
+                const hit = IcicleLayout.hitTest(this.rects, worldX, worldY);
+                if (hit && hit.node.children && hit.node.children.length > 0) {
+                    return this.drillDown(hit.node);
+                }
+                return false;
+            },
+
+            drillDown(node) {
+                if (!node || !node.children || node.children.length === 0) return false;
+                this.navigationStack.push(this.displayNode);
+                this.displayNode = node;
+                this.rects = IcicleLayout.calculateRects(node, this.width, this.height);
+                IcicleViewport.reset();
+                this.render();
+                return true;
+            },
+
+            drillUp() {
+                if (this.navigationStack.length === 0) return false;
+                this.displayNode = this.navigationStack.pop();
+                this.rects = IcicleLayout.calculateRects(this.displayNode, this.width, this.height);
+                IcicleViewport.reset();
+                this.render();
+                return true;
+            },
+
+            drillToRoot() {
+                if (this.navigationStack.length === 0) return false;
+                this.drillUp();
+                return true;
+            }
+        };
+
+        /**
+         * ViewState - Manages view switching between treemap, sunburst, and icicle.
+         * State: current view, UI bindings
+         */
+        const ViewState = {
+            current: 'treemap',
+
+            /** Initialize view state and wire up toggle buttons */
+            init() {
+                const buttons = document.querySelectorAll('.view-btn');
+                buttons.forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const view = btn.dataset.view;
+                        if (view !== this.current) {
+                            this.setView(view);
+                        }
+                    });
+                });
+            },
+
+            /** Switch to a different view */
+            setView(view) {
+                this.current = view;
+
+                // Update button states
+                document.querySelectorAll('.view-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.view === view);
+                });
+
+                // Toggle canvas visibility
+                const treemapCanvas = document.getElementById('canvas');
+                const textOverlay = document.getElementById('textOverlay');
+                const sunburstCanvas = document.getElementById('sunburstCanvas');
+                const icicleCanvas = document.getElementById('icicleCanvas');
+
+                treemapCanvas.style.display = 'none';
+                textOverlay.style.display = 'none';
+                sunburstCanvas.style.display = 'none';
+                icicleCanvas.style.display = 'none';
+
+                const container = document.getElementById('container');
+
+                if (view === 'treemap') {
+                    treemapCanvas.style.display = 'block';
+                    textOverlay.style.display = 'block';
+                    if (currentNode) renderTreemap(currentNode);
+                } else if (view === 'sunburst') {
+                    sunburstCanvas.style.display = 'block';
+                    if (currentNode) {
+                        if (!SunburstRenderer.canvas) {
+                            SunburstRenderer.init(sunburstCanvas);
+                        }
+                        SunburstRenderer.setRoot(currentNode, container.clientWidth, container.clientHeight);
+                        SunburstRenderer.render();
+                    }
+                } else if (view === 'icicle') {
+                    icicleCanvas.style.display = 'block';
+                    if (currentNode) {
+                        if (!IcicleRenderer.canvas) {
+                            IcicleRenderer.init(icicleCanvas);
+                        }
+                        IcicleRenderer.setRoot(currentNode, container.clientWidth, container.clientHeight);
+                        IcicleRenderer.render();
+                    }
+                }
+            },
+
+            /** Re-render current view (e.g., after resize) */
+            renderCurrent() {
+                const container = document.getElementById('container');
+                if (this.current === 'treemap') {
+                    if (currentNode) renderTreemap(currentNode);
+                } else if (this.current === 'sunburst') {
+                    if (currentNode && SunburstRenderer.canvas) {
+                        SunburstRenderer.calculateLayout(container.clientWidth, container.clientHeight);
+                        SunburstRenderer.render();
+                    }
+                } else if (this.current === 'icicle') {
+                    if (currentNode && IcicleRenderer.canvas) {
+                        IcicleRenderer.calculateLayout(container.clientWidth, container.clientHeight);
+                        IcicleRenderer.render();
+                    }
+                }
+            }
+        };
+
+        // Initialize ViewState
+        ViewState.init();
+
+        // Track last mouse position for hover updates during pan/zoom
+        let lastMouseX = 0, lastMouseY = 0, lastClientX = 0, lastClientY = 0;
+        let mouseOverCanvas = false;
+
+        function updateTreemapTooltip() {
+            if (!mouseOverCanvas || ViewState.current !== 'treemap') return;
+            const world = Viewport.screenToWorld(lastMouseX, lastMouseY, Viewport.zoom, Viewport.panX, Viewport.panY);
             const hit = currentNode ? TreeTraversal.hitTest(currentNode, world.x, world.y) : null;
-
             const tooltip = document.getElementById('tooltip');
             if (hit) {
                 tooltip.innerHTML = `<strong>${hit.name}</strong><br>${Format.bytes(hit.size)}<br><small>${hit.path}</small>`;
+                tooltip.style.display = 'block';
+                tooltip.style.left = (lastClientX + 15) + 'px';
+                tooltip.style.top = (lastClientY + 15) + 'px';
+            } else {
+                tooltip.style.display = 'none';
+            }
+        }
+
+        // Hit-testing for tooltip
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            lastMouseX = e.clientX - rect.left;
+            lastMouseY = e.clientY - rect.top;
+            lastClientX = e.clientX;
+            lastClientY = e.clientY;
+            mouseOverCanvas = true;
+            updateTreemapTooltip();
+        });
+
+        canvas.addEventListener('mouseenter', () => { mouseOverCanvas = true; });
+        canvas.addEventListener('mouseleave', () => {
+            mouseOverCanvas = false;
+            document.getElementById('tooltip').style.display = 'none';
+        });
+
+        // Sunburst canvas event handlers
+        const sunburstCanvas = document.getElementById('sunburstCanvas');
+
+        sunburstCanvas.addEventListener('mousemove', (e) => {
+            const rect = sunburstCanvas.getBoundingClientRect();
+            const screenX = e.clientX - rect.left;
+            const screenY = e.clientY - rect.top;
+
+            // Transform screen to world coords (same as treemap)
+            const world = Viewport.screenToWorld(
+                screenX, screenY,
+                SunburstViewport.zoom, SunburstViewport.panX, SunburstViewport.panY
+            );
+
+            const result = SunburstRenderer.handleMouseMove(world.x, world.y);
+            const tooltip = document.getElementById('tooltip');
+
+            if (result && result.node) {
+                const node = result.node;
+                tooltip.innerHTML = `<strong>${node.name}</strong><br>${Format.bytes(node.size)}<br><small>${node.path}</small>`;
                 tooltip.style.display = 'block';
                 tooltip.style.left = (e.clientX + 15) + 'px';
                 tooltip.style.top = (e.clientY + 15) + 'px';
@@ -1086,9 +3177,142 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             }
         });
 
-        canvas.addEventListener('mouseleave', () => {
+        sunburstCanvas.addEventListener('mouseleave', () => {
             document.getElementById('tooltip').style.display = 'none';
+            if (SunburstRenderer.hoveredArc) {
+                SunburstRenderer.hoveredArc = null;
+                SunburstRenderer.render();
+            }
         });
+
+        sunburstCanvas.addEventListener('click', (e) => {
+            const rect = sunburstCanvas.getBoundingClientRect();
+            const screenX = e.clientX - rect.left;
+            const screenY = e.clientY - rect.top;
+
+            // Transform screen to world coords (same as treemap)
+            const world = Viewport.screenToWorld(
+                screenX, screenY,
+                SunburstViewport.zoom, SunburstViewport.panX, SunburstViewport.panY
+            );
+
+            SunburstRenderer.handleClick(world.x, world.y);
+        });
+
+        sunburstCanvas.addEventListener('dblclick', () => {
+            SunburstRenderer.drillToRoot();
+            SunburstViewport.reset();
+            SunburstRenderer.render();
+        });
+
+        // Sunburst touch handlers - pinch zoom (same as treemap)
+        let sunburstTouchState = { active: false };
+
+        sunburstCanvas.addEventListener('touchstart', (e) => {
+            if (e.touches.length >= 2) {
+                e.preventDefault();
+                const rect = sunburstCanvas.getBoundingClientRect();
+                sunburstTouchState = TouchMath.createPinchState(
+                    e.touches[0], e.touches[1], rect, SunburstViewport
+                );
+            }
+        }, { passive: false });
+
+        sunburstCanvas.addEventListener('touchmove', (e) => {
+            if (!sunburstTouchState.active || e.touches.length < 2) return;
+            e.preventDefault();
+
+            const rect = sunburstCanvas.getBoundingClientRect();
+            const dist = TouchMath.distance(e.touches[0], e.touches[1]);
+            const mid = TouchMath.midpoint(e.touches[0], e.touches[1], rect);
+            SunburstViewport.apply(ZoomMath.calcPinchZoom(
+                sunburstTouchState, dist, mid,
+                SunburstViewport.minZoom, SunburstViewport.maxZoom
+            ));
+            SunburstRenderer.render();
+        }, { passive: false });
+
+        sunburstCanvas.addEventListener('touchend', (e) => {
+            if (sunburstTouchState.active && e.touches.length < 2) {
+                sunburstTouchState.active = false;
+            }
+        });
+
+        // Icicle canvas event handlers
+        const icicleCanvas = document.getElementById('icicleCanvas');
+
+        icicleCanvas.addEventListener('mousemove', (e) => {
+            const rect = icicleCanvas.getBoundingClientRect();
+            const screenX = e.clientX - rect.left;
+            const screenY = e.clientY - rect.top;
+
+            // Transform to world coords
+            const worldX = IcicleViewport.screenToWorldX(screenX);
+            const worldY = screenY - IcicleViewport.panY;
+
+            const result = IcicleRenderer.handleMouseMove(worldX, worldY);
+            const tooltip = document.getElementById('tooltip');
+
+            if (result && result.node) {
+                const node = result.node;
+                tooltip.innerHTML = `<strong>${node.name}</strong><br>${Format.bytes(node.size)}<br><small>${node.path}</small>`;
+                tooltip.style.display = 'block';
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            } else {
+                tooltip.style.display = 'none';
+            }
+        });
+
+        icicleCanvas.addEventListener('mouseleave', () => {
+            document.getElementById('tooltip').style.display = 'none';
+            if (IcicleRenderer.hoveredRect) {
+                IcicleRenderer.hoveredRect = null;
+                IcicleRenderer.render();
+            }
+        });
+
+        icicleCanvas.addEventListener('click', (e) => {
+            const rect = icicleCanvas.getBoundingClientRect();
+            const screenX = e.clientX - rect.left;
+            const screenY = e.clientY - rect.top;
+            const worldX = IcicleViewport.screenToWorldX(screenX);
+            const worldY = screenY - IcicleViewport.panY;
+            IcicleRenderer.handleClick(worldX, worldY);
+        });
+
+        icicleCanvas.addEventListener('dblclick', () => {
+            IcicleRenderer.drillToRoot();
+            IcicleViewport.reset();
+            IcicleRenderer.render();
+        });
+
+        // Icicle wheel handler - horizontal zoom, pan in all directions
+        // Throttled with RAF to prevent overwhelming the renderer
+        let icicleRenderPending = false;
+        icicleCanvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const rect = icicleCanvas.getBoundingClientRect();
+            const screenX = e.clientX - rect.left;
+
+            if (e.ctrlKey) {
+                // Pinch-to-zoom: exponential zoom (stable at any level)
+                const newZoom = IcicleViewport.zoom * ZoomMath.expZoomFactor(e.deltaY);
+                IcicleViewport.apply(IcicleViewport.zoomTowardsX(screenX, newZoom));
+            } else {
+                // Pan in both directions (guard against NaN)
+                if (Number.isFinite(e.deltaX)) IcicleViewport.panX -= e.deltaX;
+                if (Number.isFinite(e.deltaY)) IcicleViewport.panY -= e.deltaY;
+            }
+
+            if (!icicleRenderPending) {
+                icicleRenderPending = true;
+                requestAnimationFrame(() => {
+                    IcicleRenderer.render();
+                    icicleRenderPending = false;
+                });
+            }
+        }, { passive: false });
 
         /**
          * TouchMath - Pure functions for touch gesture calculations.
@@ -1147,6 +3371,19 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             },
 
             /**
+             * @pure Calculate exponential zoom factor from wheel delta.
+             * Stable at any zoom level, never produces negative/zero values.
+             * @param {number} deltaY - Wheel deltaY
+             * @param {number} sensitivity - Zoom speed (default 0.005)
+             * @returns {number} Multiplier to apply to current zoom
+             * @example ZoomMath.expZoomFactor(100) // => ~0.61 (zoom out)
+             * @example ZoomMath.expZoomFactor(-100) // => ~1.65 (zoom in)
+             */
+            expZoomFactor(deltaY, sensitivity = 0.01) {
+                return Math.pow(2, -deltaY * sensitivity);
+            },
+
+            /**
              * @pure Calculate new viewport state for pinch zoom.
              * Returns {zoom, panX, panY} without mutating anything.
              */
@@ -1187,6 +3424,46 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     panX: viewport.panX - deltaX,
                     panY: viewport.panY - deltaY
                 };
+            }
+        };
+
+        /**
+         * WheelHandler - Reusable wheel event setup for zoom/pan.
+         * Used by both treemap and sunburst canvases.
+         */
+        const WheelHandler = {
+            /**
+             * Setup wheel events on a canvas for zoom/pan.
+             * @param {HTMLCanvasElement} canvas - Target canvas
+             * @param {Object} viewport - Viewport state object with zoom, panX, panY, minZoom, maxZoom, apply()
+             * @param {Function} renderFn - Called after viewport changes
+             * @param {Function} [afterRenderFn] - Optional callback after render (e.g., update tooltip)
+             */
+            setup(canvas, viewport, renderFn, afterRenderFn = null) {
+                canvas.addEventListener('wheel', (e) => {
+                    e.preventDefault();
+                    const rect = canvas.getBoundingClientRect();
+
+                    if (e.ctrlKey) {
+                        // Pinch-to-zoom: exponential zoom towards cursor (stable at any level)
+                        const newZoom = ZoomMath.clampZoom(
+                            viewport.zoom * ZoomMath.expZoomFactor(e.deltaY),
+                            viewport.minZoom,
+                            viewport.maxZoom
+                        );
+                        viewport.apply(ZoomMath.zoomTowards(
+                            e.clientX - rect.left,
+                            e.clientY - rect.top,
+                            newZoom,
+                            viewport
+                        ));
+                    } else {
+                        // Two-finger pan
+                        viewport.apply(ZoomMath.pan(viewport, e.deltaX, e.deltaY));
+                    }
+                    renderFn();
+                    if (afterRenderFn) afterRenderFn();
+                }, { passive: false });
             }
         };
 
@@ -1251,29 +3528,9 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             if (e.ctrlKey) e.preventDefault();
         }, { passive: false });
 
-        canvas.addEventListener('wheel', (e) => {
-            e.preventDefault();
-
-            if (e.ctrlKey) {
-                // Pinch-to-zoom: zoom towards cursor
-                const rect = canvas.getBoundingClientRect();
-                const newZoom = ZoomMath.clampZoom(
-                    Viewport.zoom * (1 - e.deltaY * 0.01),
-                    Viewport.minZoom,
-                    Viewport.maxZoom
-                );
-                Viewport.apply(ZoomMath.zoomTowards(
-                    e.clientX - rect.left,
-                    e.clientY - rect.top,
-                    newZoom,
-                    Viewport
-                ));
-            } else {
-                // Two-finger pan
-                Viewport.apply(ZoomMath.pan(Viewport, e.deltaX, e.deltaY));
-            }
-            renderFast();
-        }, { passive: false });
+        // Setup wheel handlers - SAME code path for both views (DRY)
+        WheelHandler.setup(canvas, Viewport, renderFast, updateTreemapTooltip);
+        WheelHandler.setup(sunburstCanvas, SunburstViewport, () => SunburstRenderer.render());
 
         /**
          * TreeUtils - Pure functions for tree traversal and stats.
@@ -1312,7 +3569,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             clearTimeout(resizeTimeout);
             resizeTimeout = setTimeout(async () => {
                 Viewport.apply(Viewport.defaults());
-                await renderTreemap(currentNode);
+                ViewState.renderCurrent();
             }, 150);
         });
 
@@ -1411,6 +3668,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 read:   { icon: 'mdi:file-download-outline', label: 'Read' },
                 parse:  { icon: 'mdi:code-json', label: 'Parse' },
                 tree:   { icon: 'mdi:file-tree-outline', label: 'Build' },
+                icons:  { icon: 'mdi:image-outline', label: 'Icons' },
                 render: { icon: 'mdi:brush-outline', label: 'Render' }
             },
 
@@ -1490,7 +3748,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 
         async function processFile(file) {
             Viewport.apply(Viewport.defaults());
-            ProgressUI.show({ stages: ['read', 'parse', 'tree', 'render'], showInfo: true });
+            ProgressUI.show({ stages: ['read', 'parse', 'tree', 'icons', 'render'], showInfo: true });
             let lastYield = performance.now();
 
             // Stage 1: Read
@@ -1546,7 +3804,29 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             });
             ProgressUI.setStage('tree', 'done');
 
-            // Stage 4: Render
+            // Stage 4: Load file icons
+            ProgressUI.setStage('icons', 'active');
+            ProgressUI.setProgress('Loading icons...', 0);
+            // Collect names from raw files AND tree leaf nodes (for opaque directories)
+            const filenames = uniqueFiles.map(f => f.path.split('/').pop());
+            const treeLeafNames = TreeTraversal.collectLeafNames(rootData);
+            const allNames = [...filenames, ...treeLeafNames];
+            const uniqueIcons = FileIcons.getUniqueIcons(allNames);
+            ProgressUI.setInfo(`${uniqueIcons.length} icon types`);
+
+            // Initialize WebGL before building atlas (need gl context)
+            if (!webglInitialized) {
+                WebGLRenderer.init(canvas);
+                webglInitialized = true;
+            }
+
+            await FileIcons.buildAtlas(WebGLRenderer.gl, uniqueIcons, (loaded, total) => {
+                const pct = Math.round(loaded / total * 100);
+                ProgressUI.setProgress(`Loading icons ${loaded}/${total}`, pct);
+            });
+            ProgressUI.setStage('icons', 'done');
+
+            // Stage 5: Render
             ProgressUI.setStage('render', 'active');
             ProgressUI.setInfo('');
             await renderTreemap(rootData);
@@ -1555,17 +3835,48 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             ProgressUI.hide();
         }
 
-        fileInput.addEventListener('change', e => {
-            if (e.target.files[0]) processFile(e.target.files[0]);
-        });
+        function showFileError(message, err) {
+            console.error('File processing error:', err);
+            ProgressUI.hide();
+            loading.classList.remove('hidden', 'processing');
+            loading.innerHTML = `
+                <div style="color: #ff6b6b; text-align: center;">
+                    <div style="font-size: 16px; margin-bottom: 10px;">Error</div>
+                    <div style="font-size: 13px;">${message}</div>
+                    <div style="margin-top: 15px; font-size: 12px; color: var(--text-dim);">
+                        Drop another .json.zst file to try again
+                    </div>
+                </div>
+                <input type="file" id="fileInput" accept=".zst">
+            `;
+            // Re-attach file input listener
+            document.getElementById('fileInput').addEventListener('change', handleFileChange);
+        }
 
-        loading.addEventListener('dragover', e => { e.preventDefault(); loading.style.background = '#2a2a4e'; });
-        loading.addEventListener('dragleave', () => { loading.style.background = ''; });
-        loading.addEventListener('drop', e => {
+        async function handleFileChange(e) {
+            if (!e.target.files[0]) return;
+            try {
+                await processFile(e.target.files[0]);
+            } catch (err) {
+                showFileError(`Failed to process file: ${err.message}`, err);
+            }
+        }
+
+        async function handleFileDrop(e) {
             e.preventDefault();
             loading.style.background = '';
-            if (e.dataTransfer.files[0]) processFile(e.dataTransfer.files[0]);
-        });
+            if (!e.dataTransfer.files[0]) return;
+            try {
+                await processFile(e.dataTransfer.files[0]);
+            } catch (err) {
+                showFileError(`Failed to process file: ${err.message}`, err);
+            }
+        }
+
+        fileInput.addEventListener('change', handleFileChange);
+        loading.addEventListener('dragover', e => { e.preventDefault(); loading.style.background = '#2a2a4e'; });
+        loading.addEventListener('dragleave', () => { loading.style.background = ''; });
+        loading.addEventListener('drop', handleFileDrop);
 
     </script>
 </body>
