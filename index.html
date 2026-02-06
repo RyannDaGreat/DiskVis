@@ -143,12 +143,72 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         }
 
         /* Sunburst canvas */
-        #sunburstCanvas, #icicleCanvas {
+        #sunburstCanvas, #icicleCanvas, #typesCanvas {
             display: none;
             position: absolute;
             top: 0;
             left: 0;
             cursor: pointer;
+        }
+
+        /* Types view layout */
+        #typesContainer {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            overflow: hidden;
+        }
+        #typesCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: calc(100% - 300px);
+            height: 100%;
+        }
+        #typesTable {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 300px;
+            height: 100%;
+            overflow-y: auto;
+            background: var(--glass-bg);
+            border-left: 1px solid var(--glass-border);
+            font-size: 12px;
+        }
+        #typesTable table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        #typesTable th, #typesTable td {
+            padding: 6px 10px;
+            text-align: left;
+            border-bottom: 1px solid var(--glass-border);
+        }
+        #typesTable th {
+            position: sticky;
+            top: 0;
+            background: var(--bg);
+            color: var(--text-dim);
+            font-weight: 500;
+        }
+        #typesTable td:nth-child(2), #typesTable td:nth-child(3) {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+        #typesTable tr:hover {
+            background: var(--glass-subtle);
+        }
+        .ext-color {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
+            margin-right: 6px;
+            vertical-align: middle;
         }
 
         #loading #fileInput {
@@ -231,6 +291,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             <button class="view-btn active" data-view="treemap">Treemap</button>
             <button class="view-btn" data-view="sunburst">Sunburst</button>
             <button class="view-btn" data-view="icicle">Icicle</button>
+            <button class="view-btn" data-view="types">Types</button>
         </div>
         <div id="stats"></div>
     </div>
@@ -239,6 +300,10 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         <canvas id="textOverlay"></canvas>
         <canvas id="sunburstCanvas"></canvas>
         <canvas id="icicleCanvas"></canvas>
+        <div id="typesContainer">
+            <canvas id="typesCanvas"></canvas>
+            <div id="typesTable"></div>
+        </div>
     </div>
     <div id="tooltip" class="glass glass-panel"></div>
     <div id="loading" class="glass glass-panel">
@@ -272,8 +337,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             zoom: 1,
             panX: 0,
             panY: 0,
-            minZoom: 0.1,
-            maxZoom: 1000,
+            get minZoom() { return Config.ZOOM.MIN; },
+            get maxZoom() { return Config.ZOOM.MAX; },
 
             /** @pure Default viewport state */
             defaults() {
@@ -350,8 +415,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             zoom: 1,
             panX: 0,
             panY: 0,
-            minZoom: 0.3,
-            maxZoom: 10,
+            get minZoom() { return Config.ZOOM.MIN; },
+            get maxZoom() { return Config.ZOOM.MAX; },
 
             defaults() {
                 return { zoom: 1, panX: 0, panY: 0 };
@@ -377,8 +442,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             zoom: 1,
             panX: 0,
             panY: 0,
-            minZoom: 1,
-            maxZoom: 10000,
+            get minZoom() { return Config.ZOOM.MIN; },
+            get maxZoom() { return Config.ZOOM.MAX; },
 
             defaults() {
                 return { zoom: 1, panX: 0, panY: 0 };
@@ -472,7 +537,24 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 '__pycache__', '.venv', 'venv', '.tox', '.eggs', '.pytest_cache', '.mypy_cache', '.ruff_cache',
                 // IDEs
                 '.idea', '.vscode'
-            ]
+            ],
+
+            /** Shared zoom limits for all views */
+            ZOOM: {
+                MIN: 0.1,
+                MAX: 1000000
+            },
+
+            /** Directory selection styling */
+            SELECTION: {
+                DRAG_LINE_COLOR: 'rgba(108, 155, 207, 0.8)',
+                DRAG_LINE_WIDTH: 3,
+                DRAG_LINE_DASH: [8, 4],
+                HIGHLIGHT_OUTLINE_COLOR: 'rgba(255, 255, 255, 0.9)',
+                HIGHLIGHT_OUTLINE_WIDTH: 4,
+                PIXELS_PER_ANCESTOR_LEVEL: 30,
+                ZOOM_ANIMATION_DURATION: 300
+            }
         };
 
         /**
@@ -1434,6 +1516,19 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 const dot = name.lastIndexOf('.');
                 const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
                 return Math.abs(this.hash(ext)) % Config.COLORS.length;
+            },
+
+            /**
+             * @pure Parse hex color string to [r, g, b] array.
+             * @example ColorUtils.parseHex('#FF5454') // => [255, 84, 84]
+             */
+            parseHex(hex) {
+                const h = hex.startsWith('#') ? hex.slice(1) : hex;
+                return [
+                    parseInt(h.slice(0, 2), 16),
+                    parseInt(h.slice(2, 4), 16),
+                    parseInt(h.slice(4, 6), 16)
+                ];
             }
         };
 
@@ -1512,6 +1607,48 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 };
                 traverse(node);
                 return names;
+            },
+
+            /**
+             * @pure Find all ancestors from root to target node (inclusive).
+             * @param {Object} rootNode - Root of tree
+             * @param {Object} targetNode - Node to find ancestors for
+             * @returns {Object[]} Array of nodes from root to target
+             * @example TreeTraversal.findAncestors(root, leaf) // => [root, ..., parent, leaf]
+             */
+            findAncestors(rootNode, targetNode) {
+                const ancestors = [];
+                const traverse = (node, path) => {
+                    path.push(node);
+                    if (node.path === targetNode.path) {
+                        ancestors.push(...path);
+                        return true;
+                    }
+                    if (node.children) {
+                        for (const child of node.children) {
+                            if (traverse(child, path)) return true;
+                        }
+                    }
+                    path.pop();
+                    return false;
+                };
+                traverse(rootNode, []);
+                return ancestors;
+            },
+
+            /**
+             * @pure Get an ancestor N levels up from target.
+             * @param {Object} rootNode - Root of tree
+             * @param {Object} targetNode - Starting node
+             * @param {number} levelsUp - How many levels to go up (0 = target itself)
+             * @returns {Object|null} Ancestor node or null if not found
+             * @example TreeTraversal.getAncestor(root, leaf, 1) // => parent of leaf
+             */
+            getAncestor(rootNode, targetNode, levelsUp) {
+                const ancestors = this.findAncestors(rootNode, targetNode);
+                if (!ancestors.length) return null;
+                const idx = Math.max(0, ancestors.length - 1 - levelsUp);
+                return ancestors[idx];
             }
         };
 
@@ -2349,7 +2486,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 ctx.fill();
 
                 ctx.strokeStyle = `rgba(0, 0, 0, ${0.3 * opacity})`;
-                ctx.lineWidth = 0.5;
+                ctx.lineWidth = 0.5 / SunburstViewport.zoom;  // Constant thickness regardless of zoom
                 ctx.stroke();
             },
 
@@ -2445,7 +2582,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 ctx.fill();
 
                 ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-                ctx.lineWidth = 1;
+                ctx.lineWidth = 1 / SunburstViewport.zoom;  // Constant thickness regardless of zoom
                 ctx.stroke();
 
                 if (this.animating) return;
@@ -2501,6 +2638,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 
                 const hit = SunburstLayout.hitTest(x, y, this.arcs, this.centerX, this.centerY);
                 if (hit && hit.node.children && hit.node.children.length > 0) {
+                    SelectedDirectory.set(hit.node, 'sunburst');
                     return this.drillDown(hit.node, hit);
                 }
                 return false;
@@ -2993,7 +3131,10 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             handleClick(worldX, worldY) {
                 const hit = IcicleLayout.hitTest(this.rects, worldX, worldY);
                 if (hit && hit.node.children && hit.node.children.length > 0) {
-                    return this.drillDown(hit.node);
+                    // Set selected directory and zoom/pan to show it (no drill-down)
+                    SelectedDirectory.set(hit.node, 'icicle');
+                    this.animateZoomToFit(hit);
+                    return true;
                 }
                 return false;
             },
@@ -3021,7 +3162,437 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 if (this.navigationStack.length === 0) return false;
                 this.drillUp();
                 return true;
+            },
+
+            /**
+             * Find rect by node path in current rects.
+             */
+            findRectByPath(path) {
+                return this.rects.find(r => r.node.path === path);
+            },
+
+            /**
+             * Animate zoom to fit a specific rect.
+             * Used when treemap drag-select triggers cross-view sync.
+             */
+            animateZoomToFit(targetRect) {
+                if (!targetRect || this.animatingZoom) return;
+
+                const duration = Config.SELECTION.ZOOM_ANIMATION_DURATION;
+                const startTime = performance.now();
+
+                // Calculate target viewport to fit the rect
+                const padding = 20;
+                const targetWidth = targetRect.w;
+                const targetZoom = Math.max(
+                    Config.ZOOM.MIN,
+                    Math.min(Config.ZOOM.MAX, (this.width - padding * 2) / targetWidth)
+                );
+                const targetPanX = -targetRect.x * targetZoom + padding;
+                const targetPanY = -targetRect.y + padding;
+
+                const startZoom = IcicleViewport.zoom;
+                const startPanX = IcicleViewport.panX;
+                const startPanY = IcicleViewport.panY;
+
+                this.animatingZoom = true;
+
+                const animate = (now) => {
+                    const elapsed = now - startTime;
+                    const t = Math.min(1, elapsed / duration);
+                    // Ease-out cubic
+                    const ease = 1 - Math.pow(1 - t, 3);
+
+                    IcicleViewport.zoom = startZoom + (targetZoom - startZoom) * ease;
+                    IcicleViewport.panX = startPanX + (targetPanX - startPanX) * ease;
+                    IcicleViewport.panY = startPanY + (targetPanY - startPanY) * ease;
+
+                    this.render();
+
+                    if (t < 1) {
+                        requestAnimationFrame(animate);
+                    } else {
+                        this.animatingZoom = false;
+                    }
+                };
+
+                requestAnimationFrame(animate);
             }
+        };
+
+        /**
+         * TypesAnalysis - Pure functions for file type aggregation.
+         * @pure All methods are pure functions.
+         */
+        const TypesAnalysis = {
+            /**
+             * @pure Extract extension from filename.
+             * @param {string} filename - File name
+             * @returns {string} Extension (lowercase, without dot) or '(no ext)'
+             * @example TypesAnalysis.getExtension('file.TXT') // => 'txt'
+             */
+            getExtension(filename) {
+                const lastDot = filename.lastIndexOf('.');
+                if (lastDot === -1 || lastDot === 0 || lastDot === filename.length - 1) {
+                    return '(no ext)';
+                }
+                return filename.slice(lastDot + 1).toLowerCase();
+            },
+
+            /**
+             * @pure Aggregate file sizes by extension with statistics.
+             * Extensions with count < minCount are grouped into "other".
+             * @param {Object} node - Root node of tree
+             * @param {number} minCount - Minimum file count to be its own category (default 2)
+             * @returns {Object[]} Array of {ext, size, count, min, max, mean, median, stdDev} sorted by size desc
+             */
+            aggregateByExtension(node, minCount = 2) {
+                const extMap = new Map();
+
+                const traverse = (n) => {
+                    if (!n.children || n.children.length === 0) {
+                        const ext = this.getExtension(n.name);
+                        if (!extMap.has(ext)) {
+                            extMap.set(ext, { ext, size: 0, count: 0, sizes: [] });
+                        }
+                        const entry = extMap.get(ext);
+                        entry.size += n.size;
+                        entry.count += 1;
+                        entry.sizes.push(n.size);
+                    } else {
+                        for (const child of n.children) {
+                            traverse(child);
+                        }
+                    }
+                };
+
+                traverse(node);
+
+                // Calculate statistics for each extension
+                const calcStats = (sizes) => {
+                    if (sizes.length === 0) return { min: 0, max: 0, mean: 0, median: 0, stdDev: 0 };
+                    const sorted = [...sizes].sort((a, b) => a - b);
+                    const min = sorted[0];
+                    const max = sorted[sorted.length - 1];
+                    const sum = sizes.reduce((a, b) => a + b, 0);
+                    const mean = sum / sizes.length;
+                    const median = sizes.length % 2 === 0
+                        ? (sorted[sizes.length / 2 - 1] + sorted[sizes.length / 2]) / 2
+                        : sorted[Math.floor(sizes.length / 2)];
+                    const variance = sizes.reduce((acc, s) => acc + Math.pow(s - mean, 2), 0) / sizes.length;
+                    const stdDev = Math.sqrt(variance);
+                    return { min, max, mean, median, stdDev };
+                };
+
+                // Separate into qualifying extensions and "other"
+                const results = [];
+                let otherSizes = [];
+
+                for (const entry of extMap.values()) {
+                    if (entry.count >= minCount) {
+                        const stats = calcStats(entry.sizes);
+                        results.push({ ext: entry.ext, size: entry.size, count: entry.count, ...stats });
+                    } else {
+                        otherSizes.push(...entry.sizes);
+                    }
+                }
+
+                // Add "other" if it has any files
+                if (otherSizes.length > 0) {
+                    const stats = calcStats(otherSizes);
+                    const size = otherSizes.reduce((a, b) => a + b, 0);
+                    results.push({ ext: 'other', size, count: otherSizes.length, ...stats });
+                }
+
+                // Sort by size descending
+                return results.sort((a, b) => b.size - a.size);
+            }
+        };
+
+        /**
+         * TypesViewport - Pan/zoom state for types pie chart.
+         */
+        const TypesViewport = {
+            zoom: 1,
+            panX: 0,
+            panY: 0,
+            get minZoom() { return Config.ZOOM.MIN; },
+            get maxZoom() { return Config.ZOOM.MAX; },
+
+            defaults() {
+                return { zoom: 1, panX: 0, panY: 0 };
+            },
+
+            apply(state) {
+                this.zoom = state.zoom;
+                this.panX = state.panX;
+                this.panY = state.panY;
+            },
+
+            reset() {
+                this.apply(this.defaults());
+            }
+        };
+
+        /**
+         * TypesRenderer - Canvas2D renderer for file types pie chart.
+         * State: canvas, ctx, width, height, data, arcs, hoveredArc
+         */
+        const TypesRenderer = {
+            canvas: null,
+            ctx: null,
+            width: 0,
+            height: 0,
+            data: [],          // [{ext, size, count, colorIdx}]
+            arcs: [],          // [{ext, size, count, startAngle, endAngle, colorIdx}]
+            hoveredArc: null,
+            centerX: 0,
+            centerY: 0,
+            radius: 0,
+
+            init(canvas) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+            },
+
+            setData(node, width, height) {
+                // Available width for chart (excluding 300px table)
+                const chartWidth = width - 300;
+                this.width = chartWidth;
+                this.height = height;
+
+                // Size canvas
+                const scale = Config.RENDER_SCALE;
+                this.canvas.width = chartWidth * scale;
+                this.canvas.height = height * scale;
+                // CSS handles sizing via calc(100% - 300px)
+
+                // Calculate center and radius
+                this.centerX = chartWidth / 2;
+                this.centerY = height / 2;
+                this.radius = Math.min(this.centerX, this.centerY) * 0.8;
+
+                // Aggregate data
+                const rawData = TypesAnalysis.aggregateByExtension(node);
+                const totalSize = rawData.reduce((sum, d) => sum + d.size, 0);
+                this.totalSize = totalSize;
+
+                // Calculate cumulative values from smallest to largest
+                // Data is sorted by size DESC, so we accumulate from the end
+                let cumSize = 0;
+                let cumCount = 0;
+                for (let i = rawData.length - 1; i >= 0; i--) {
+                    cumSize += rawData[i].size;
+                    cumCount += rawData[i].count;
+                    rawData[i].cumSize = cumSize;
+                    rawData[i].cumCount = cumCount;
+                    rawData[i].cumPct = (cumSize / totalSize) * 100;
+                    rawData[i].pct = (rawData[i].size / totalSize) * 100;
+                }
+
+                // Assign colors using same hash as treemap
+                this.data = rawData.map((d, i) => ({
+                    ...d,
+                    colorIdx: Math.abs(ColorUtils.hash(d.ext)) % Config.COLORS.length
+                }));
+
+                // Calculate arcs
+                const TAU = Math.PI * 2;
+                let startAngle = -Math.PI / 2;  // Start at top
+
+                this.arcs = this.data.map(d => {
+                    const span = (d.size / totalSize) * TAU;
+                    const arc = {
+                        ...d,
+                        startAngle,
+                        endAngle: startAngle + span
+                    };
+                    startAngle += span;
+                    return arc;
+                });
+
+                this.updateTable();
+            },
+
+            updateTable() {
+                const table = document.getElementById('typesTable');
+
+                let html = '<table><thead><tr><th>Extension</th><th>Count</th><th>Cum#</th><th>Size</th><th>CumSize</th><th>%</th><th>Cum%</th><th>Min</th><th>Max</th><th>Mean</th><th>Median</th><th>StdDev</th></tr></thead><tbody>';
+
+                for (const d of this.data) {
+                    const color = Config.COLORS[d.colorIdx];
+                    html += `<tr data-ext="${d.ext}">
+                        <td><span class="ext-color" style="background:${color}"></span>${d.ext}</td>
+                        <td>${d.count.toLocaleString()}</td>
+                        <td>${d.cumCount.toLocaleString()}</td>
+                        <td>${Format.bytes(d.size)}</td>
+                        <td>${Format.bytes(d.cumSize)}</td>
+                        <td>${d.pct.toFixed(1)}%</td>
+                        <td>${d.cumPct.toFixed(1)}%</td>
+                        <td>${Format.bytes(d.min)}</td>
+                        <td>${Format.bytes(d.max)}</td>
+                        <td>${Format.bytes(d.mean)}</td>
+                        <td>${Format.bytes(d.median)}</td>
+                        <td>${Format.bytes(d.stdDev)}</td>
+                    </tr>`;
+                }
+
+                html += '</tbody></table>';
+                table.innerHTML = html;
+
+                // Add hover handlers to table rows
+                table.querySelectorAll('tr[data-ext]').forEach(row => {
+                    row.addEventListener('mouseenter', () => {
+                        const ext = row.dataset.ext;
+                        this.hoveredArc = this.arcs.find(a => a.ext === ext);
+                        this.render();
+                    });
+                    row.addEventListener('mouseleave', () => {
+                        this.hoveredArc = null;
+                        this.render();
+                    });
+                });
+            },
+
+            render() {
+                if (!this.ctx || !this.arcs.length) return;
+
+                const ctx = this.ctx;
+                const scale = Config.RENDER_SCALE;
+                const cx = this.centerX * scale;
+                const cy = this.centerY * scale;
+                const r = this.radius * scale;
+
+                // Apply viewport transform
+                ctx.setTransform(
+                    TypesViewport.zoom, 0, 0, TypesViewport.zoom,
+                    TypesViewport.panX * scale, TypesViewport.panY * scale
+                );
+
+                // Clear
+                ctx.clearRect(-10000, -10000, 20000, 20000);
+
+                // Draw arcs
+                for (const arc of this.arcs) {
+                    const [r255, g255, b255] = ColorUtils.parseHex(Config.COLORS[arc.colorIdx]);
+                    const isHovered = arc === this.hoveredArc;
+
+                    // Use gradient like sunburst
+                    const midAngle = (arc.startAngle + arc.endAngle) / 2;
+                    const gradX = cx + Math.cos(midAngle) * r * 0.5;
+                    const gradY = cy + Math.sin(midAngle) * r * 0.5;
+
+                    let fillR = r255, fillG = g255, fillB = b255;
+                    if (isHovered) {
+                        [fillR, fillG, fillB] = RenderStyle.highlightRGB(r255, g255, b255);
+                    }
+
+                    ctx.beginPath();
+                    ctx.moveTo(cx, cy);
+                    ctx.arc(cx, cy, r, arc.startAngle, arc.endAngle);
+                    ctx.closePath();
+
+                    // Gradient fill
+                    const grad = RenderStyle.diagonalGradient(ctx,
+                        cx - r, cy - r, r * 2, r * 2,
+                        fillR, fillG, fillB
+                    );
+                    ctx.fillStyle = grad;
+                    ctx.fill();
+
+                    // Border - subtle like sunburst
+                    ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+                    ctx.lineWidth = 0.5 * scale / TypesViewport.zoom;  // Constant thickness
+                    ctx.stroke();
+                }
+
+                // Draw labels for larger segments
+                ctx.setTransform(1, 0, 0, 1, 0, 0);  // Reset transform for text
+                RenderStyle.apply(ctx, RenderStyle.labelText(scale));
+
+                for (const arc of this.arcs) {
+                    const span = arc.endAngle - arc.startAngle;
+                    if (span < 0.1) continue;  // Skip small segments
+
+                    const midAngle = (arc.startAngle + arc.endAngle) / 2;
+                    const labelR = this.radius * 0.65 * TypesViewport.zoom;
+                    const tx = (this.centerX * TypesViewport.zoom + TypesViewport.panX) * scale;
+                    const ty = (this.centerY * TypesViewport.zoom + TypesViewport.panY) * scale;
+                    const lx = tx + Math.cos(midAngle) * labelR * scale;
+                    const ly = ty + Math.sin(midAngle) * labelR * scale;
+
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(arc.ext, lx, ly);
+                }
+
+                RenderStyle.clearShadow(ctx);
+            },
+
+            handleMouseMove(screenX, screenY) {
+                // Transform to world coords
+                const worldX = (screenX - TypesViewport.panX) / TypesViewport.zoom;
+                const worldY = (screenY - TypesViewport.panY) / TypesViewport.zoom;
+
+                // Check if in pie
+                const dx = worldX - this.centerX;
+                const dy = worldY - this.centerY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist > this.radius) {
+                    if (this.hoveredArc) {
+                        this.hoveredArc = null;
+                        this.render();
+                    }
+                    return null;
+                }
+
+                // Find arc by angle
+                let angle = Math.atan2(dy, dx);
+                // Normalize to [0, 2PI] from our start point
+                if (angle < -Math.PI / 2) angle += Math.PI * 2;
+
+                const hit = this.arcs.find(a => angle >= a.startAngle && angle < a.endAngle);
+                if (hit !== this.hoveredArc) {
+                    this.hoveredArc = hit;
+                    this.render();
+                }
+
+                return hit ? hit : null;  // Return full arc data (ext, size, count, pct, cumPct, cumSize, cumCount)
+            }
+        };
+
+        /**
+         * SelectedDirectory - Shared state for directory selection across all views.
+         * State: node, path, observers
+         * Other views subscribe to changes and react accordingly.
+         */
+        const SelectedDirectory = {
+            node: null,
+            path: null,
+            observers: [],
+            source: null,  // Which view triggered the selection ('treemap', 'icicle', 'sunburst')
+
+            /**
+             * Set the selected directory. No-op for non-directories.
+             * @param {Object} newNode - Directory node to select (must have children)
+             * @param {string} source - Which view triggered this ('treemap', 'icicle', 'sunburst')
+             * @returns {boolean} True if selection changed
+             */
+            set(newNode, source = null) {
+                if (newNode && (!newNode.children || !newNode.children.length)) return false;
+                const newPath = newNode?.path ?? null;
+                if (this.path === newPath) return false;
+                this.node = newNode;
+                this.path = newPath;
+                this.source = source;
+                this.observers.forEach(fn => fn(newNode, source));
+                return true;
+            },
+
+            subscribe(fn) { this.observers.push(fn); },
+            clear() { this.set(null, null); },
+            get() { return this.node; }
         };
 
         /**
@@ -3058,11 +3629,13 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 const textOverlay = document.getElementById('textOverlay');
                 const sunburstCanvas = document.getElementById('sunburstCanvas');
                 const icicleCanvas = document.getElementById('icicleCanvas');
+                const typesContainer = document.getElementById('typesContainer');
 
                 treemapCanvas.style.display = 'none';
                 textOverlay.style.display = 'none';
                 sunburstCanvas.style.display = 'none';
                 icicleCanvas.style.display = 'none';
+                typesContainer.style.display = 'none';
 
                 const container = document.getElementById('container');
 
@@ -3088,6 +3661,17 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                         IcicleRenderer.setRoot(currentNode, container.clientWidth, container.clientHeight);
                         IcicleRenderer.render();
                     }
+                } else if (view === 'types') {
+                    typesContainer.style.display = 'block';
+                    const typesCanvas = document.getElementById('typesCanvas');
+                    typesCanvas.style.display = 'block';
+                    if (currentNode) {
+                        if (!TypesRenderer.canvas) {
+                            TypesRenderer.init(typesCanvas);
+                        }
+                        TypesRenderer.setData(currentNode, container.clientWidth, container.clientHeight);
+                        TypesRenderer.render();
+                    }
                 }
             },
 
@@ -3106,12 +3690,42 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                         IcicleRenderer.calculateLayout(container.clientWidth, container.clientHeight);
                         IcicleRenderer.render();
                     }
+                } else if (this.current === 'types') {
+                    if (currentNode && TypesRenderer.canvas) {
+                        TypesRenderer.setData(currentNode, container.clientWidth, container.clientHeight);
+                        TypesRenderer.render();
+                    }
                 }
             }
         };
 
         // Initialize ViewState
         ViewState.init();
+
+        // Subscribe to SelectedDirectory changes for cross-view sync
+        SelectedDirectory.subscribe((node, source) => {
+            if (!node) return;
+
+            // When treemap drag-select triggers, sync other views
+            if (source === 'treemap') {
+                // Icicle: animate zoom-to-fit the selected directory
+                if (IcicleRenderer.rects) {
+                    const rect = IcicleRenderer.findRectByPath(node.path);
+                    if (rect) {
+                        IcicleRenderer.animateZoomToFit(rect);
+                    }
+                }
+
+                // Sunburst: drill to selected directory (if different from current)
+                if (SunburstRenderer.displayNode && SunburstRenderer.displayNode.path !== node.path) {
+                    // Find the arc for this node and drill to it
+                    const arc = SunburstRenderer.arcs?.find(a => a.node.path === node.path);
+                    if (arc && node.children?.length > 0) {
+                        SunburstRenderer.drillDown(node, arc);
+                    }
+                }
+            }
+        });
 
         // Track last mouse position for hover updates during pan/zoom
         let lastMouseX = 0, lastMouseY = 0, lastClientX = 0, lastClientY = 0;
@@ -3147,6 +3761,164 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         canvas.addEventListener('mouseleave', () => {
             mouseOverCanvas = false;
             document.getElementById('tooltip').style.display = 'none';
+        });
+
+        // Treemap drag selection state
+        const treemapDrag = {
+            active: false,
+            startX: 0,
+            startY: 0,
+            startNode: null,     // The file/directory initially clicked
+            currentAncestor: null  // Current ancestor being highlighted
+        };
+
+        /**
+         * Render drag selection feedback on textOverlay.
+         * Shows: thin outlines on ALL ancestors, thick outline on current, dashed line, path label.
+         * All coordinates must account for: Viewport zoom/pan + full render scale (including DPI)
+         */
+        function renderDragSelection(curScreenX, curScreenY) {
+            // Re-render treemap with labels first (clears and redraws text overlay)
+            renderFast();
+
+            if (!treemapDrag.startNode) return;
+
+            const textOverlay = document.getElementById('textOverlay');
+            const ctx = textOverlay.getContext('2d');
+            // Use full render scale including devicePixelRatio
+            const scale = Format.renderScale();
+            const { zoom, panX, panY } = Viewport;
+
+            // Get all ancestors from root to the start node
+            const ancestors = TreeTraversal.findAncestors(currentNode, treemapDrag.startNode);
+
+            // Draw thin outlines on ALL ancestors (so user can see boundaries)
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.lineWidth = 1 * scale;
+            for (const ancestor of ancestors) {
+                if (!ancestor.bounds) continue;
+                const b = ancestor.bounds;
+                const sx = (b.x * zoom + panX) * scale;
+                const sy = (b.y * zoom + panY) * scale;
+                const sw = b.width * zoom * scale;
+                const sh = b.height * zoom * scale;
+                ctx.strokeRect(sx, sy, sw, sh);
+            }
+
+            // Draw thicker highlight on current ancestor selection
+            if (treemapDrag.currentAncestor?.bounds) {
+                const b = treemapDrag.currentAncestor.bounds;
+                const boxCanvasX = (b.x * zoom + panX) * scale;
+                const boxCanvasY = (b.y * zoom + panY) * scale;
+                const boxCanvasW = b.width * zoom * scale;
+                const boxCanvasH = b.height * zoom * scale;
+
+                ctx.strokeStyle = Config.SELECTION.HIGHLIGHT_OUTLINE_COLOR;
+                ctx.lineWidth = Config.SELECTION.HIGHLIGHT_OUTLINE_WIDTH * scale;
+                ctx.strokeRect(boxCanvasX, boxCanvasY, boxCanvasW, boxCanvasH);
+
+                // Draw path label above the selection box
+                const path = treemapDrag.currentAncestor.path || treemapDrag.currentAncestor.name;
+                const fontSize = 12 * scale;
+                const labelPadding = 4 * scale;
+                const labelHeight = fontSize + labelPadding * 2;
+                const labelY = boxCanvasY - labelPadding;
+
+                ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'bottom';
+
+                // Background pill for readability
+                const textWidth = ctx.measureText(path).width;
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+                const bgX = boxCanvasX - labelPadding;
+                const bgY = labelY - fontSize - labelPadding;
+                const bgW = textWidth + labelPadding * 2;
+                const bgH = labelHeight;
+                ctx.beginPath();
+                ctx.roundRect(bgX, bgY, bgW, bgH, 4 * scale);
+                ctx.fill();
+
+                // Text
+                ctx.fillStyle = '#fff';
+                ctx.fillText(path, boxCanvasX, labelY);
+            }
+
+            // Draw dashed line from drag start to current mouse position
+            ctx.setLineDash(Config.SELECTION.DRAG_LINE_DASH.map(v => v * scale));
+            ctx.strokeStyle = Config.SELECTION.DRAG_LINE_COLOR;
+            ctx.lineWidth = Config.SELECTION.DRAG_LINE_WIDTH * scale;
+            ctx.beginPath();
+            ctx.moveTo(treemapDrag.startX * scale, treemapDrag.startY * scale);
+            ctx.lineTo(curScreenX * scale, curScreenY * scale);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const screenX = e.clientX - rect.left;
+            const screenY = e.clientY - rect.top;
+            const world = Viewport.screenToWorld(screenX, screenY, Viewport.zoom, Viewport.panX, Viewport.panY);
+
+            if (!currentNode) return;
+            const hit = TreeTraversal.hitTest(currentNode, world.x, world.y);
+            if (!hit) return;
+
+            // Start drag
+            treemapDrag.active = true;
+            treemapDrag.startX = screenX;
+            treemapDrag.startY = screenY;
+            treemapDrag.startNode = hit;
+            treemapDrag.currentAncestor = null;
+        });
+
+        // Track drag movement (extends existing mousemove)
+        canvas.addEventListener('mousemove', (e) => {
+            if (!treemapDrag.active || !currentNode) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const curX = e.clientX - rect.left;
+            const curY = e.clientY - rect.top;
+
+            // Calculate drag distance and ancestor level
+            const dx = curX - treemapDrag.startX;
+            const dy = curY - treemapDrag.startY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const levelsUp = Math.floor(dist / Config.SELECTION.PIXELS_PER_ANCESTOR_LEVEL);
+
+            // Get ancestor at that level
+            const ancestor = TreeTraversal.getAncestor(currentNode, treemapDrag.startNode, levelsUp);
+
+            // Only update if ancestor changed
+            if (ancestor && ancestor !== treemapDrag.currentAncestor) {
+                treemapDrag.currentAncestor = ancestor;
+            }
+
+            // Render visual feedback
+            if (treemapDrag.currentAncestor) {
+                renderDragSelection(curX, curY);
+            }
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            if (treemapDrag.active && treemapDrag.currentAncestor) {
+                // Set selected directory
+                SelectedDirectory.set(treemapDrag.currentAncestor, 'treemap');
+            }
+
+            // Clear drag state
+            treemapDrag.active = false;
+            treemapDrag.startNode = null;
+            treemapDrag.currentAncestor = null;
+
+            // Clear overlay
+            const textOverlay = document.getElementById('textOverlay');
+            const ctx = textOverlay.getContext('2d');
+            ctx.clearRect(0, 0, textOverlay.width, textOverlay.height);
+
+            // Re-render to restore labels
+            if (currentNode) renderFast();
         });
 
         // Sunburst canvas event handlers
@@ -3197,12 +3969,6 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             );
 
             SunburstRenderer.handleClick(world.x, world.y);
-        });
-
-        sunburstCanvas.addEventListener('dblclick', () => {
-            SunburstRenderer.drillToRoot();
-            SunburstViewport.reset();
-            SunburstRenderer.render();
         });
 
         // Sunburst touch handlers - pinch zoom (same as treemap)
@@ -3281,12 +4047,6 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             IcicleRenderer.handleClick(worldX, worldY);
         });
 
-        icicleCanvas.addEventListener('dblclick', () => {
-            IcicleRenderer.drillToRoot();
-            IcicleViewport.reset();
-            IcicleRenderer.render();
-        });
-
         // Icicle wheel handler - horizontal zoom, pan in all directions
         // Throttled with RAF to prevent overwhelming the renderer
         let icicleRenderPending = false;
@@ -3313,6 +4073,40 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 });
             }
         }, { passive: false });
+
+        // Types canvas event handlers
+        const typesCanvas = document.getElementById('typesCanvas');
+
+        typesCanvas.addEventListener('mousemove', (e) => {
+            const rect = typesCanvas.getBoundingClientRect();
+            const screenX = e.clientX - rect.left;
+            const screenY = e.clientY - rect.top;
+
+            const result = TypesRenderer.handleMouseMove(screenX, screenY);
+            const tooltip = document.getElementById('tooltip');
+
+            if (result) {
+                tooltip.innerHTML = `<strong>.${result.ext}</strong><br>` +
+                    `${result.count.toLocaleString()} files | ${Format.bytes(result.size)}<br>` +
+                    `${result.pct.toFixed(1)}% (cum: ${result.cumPct.toFixed(1)}%)<br>` +
+                    `<small>min: ${Format.bytes(result.min)} | max: ${Format.bytes(result.max)}<br>` +
+                    `mean: ${Format.bytes(result.mean)} | median: ${Format.bytes(result.median)}<br>` +
+                    `stdDev: ${Format.bytes(result.stdDev)}</small>`;
+                tooltip.style.display = 'block';
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            } else {
+                tooltip.style.display = 'none';
+            }
+        });
+
+        typesCanvas.addEventListener('mouseleave', () => {
+            document.getElementById('tooltip').style.display = 'none';
+            if (TypesRenderer.hoveredArc) {
+                TypesRenderer.hoveredArc = null;
+                TypesRenderer.render();
+            }
+        });
 
         /**
          * TouchMath - Pure functions for touch gesture calculations.
@@ -3514,15 +4308,6 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             }
         });
 
-        canvas.addEventListener('dblclick', async () => {
-            if (Viewport.zoom !== 1 || Viewport.panX !== 0 || Viewport.panY !== 0) {
-                Viewport.apply(Viewport.defaults());
-                if (currentNode) {
-                    await renderTreemap(currentNode);
-                }
-            }
-        });
-
         // Prevent browser zoom on pinch (must be at document level)
         document.addEventListener('wheel', (e) => {
             if (e.ctrlKey) e.preventDefault();
@@ -3531,6 +4316,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         // Setup wheel handlers - SAME code path for both views (DRY)
         WheelHandler.setup(canvas, Viewport, renderFast, updateTreemapTooltip);
         WheelHandler.setup(sunburstCanvas, SunburstViewport, () => SunburstRenderer.render());
+        WheelHandler.setup(typesCanvas, TypesViewport, () => TypesRenderer.render());
 
         /**
          * TreeUtils - Pure functions for tree traversal and stats.
