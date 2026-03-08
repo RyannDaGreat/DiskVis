@@ -20,6 +20,7 @@ General-purpose disk usage visualization tool. Scans directory trees (local file
 3. **No files modified outside this repository.** Treat this as a portable dump — all outputs, checkpoints, and temp files stay within the repo or system temp dirs.
 4. **No silent failures.** Errors fail loudly. If a scan finds zero files, that's a bug, not a success.
 5. **Graceful degradation.** Auto-detection features (FSx→S3, mount detection) must work when possible and clearly report why they can't when they fail. Never silently fall back.
+6. **Never commit untested code.** Every function must be tested before committing. If you can't test it, don't write it. If you write it and it fails, don't commit it. If you can only test a subset, only commit that subset. Untested functions must be clearly marked `# UNTESTED` in comments and docstrings — never claim something works unless you verified it.
 
 ## File Structure
 ```
