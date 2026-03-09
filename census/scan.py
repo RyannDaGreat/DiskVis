@@ -205,7 +205,7 @@ def print_progress(dirs_completed: int, file_count: int, total_size: int) -> Non
     """
     if dirs_completed % PROGRESS_INTERVAL == 0:
         print(f"  {dirs_completed:,} dirs, {file_count:,} files, {total_size / 1e9:.1f} GB...",
-              file=sys.stderr)
+              file=sys.stderr, flush=True)
 
 
 # =============================================================================

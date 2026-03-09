@@ -17,8 +17,6 @@ from botocore.config import Config as BotoConfig
 from census.scan import (
     finalize_scan,
     init_checkpoints,
-    maybe_checkpoint,
-    print_progress,
     save_checkpoint,
 )
 
@@ -83,7 +81,7 @@ def discover_prefixes(client, bucket: str, prefix: str, target_count: int) -> li
         for cp in page.get('CommonPrefixes', []):
             prefixes.append(cp['Prefix'])
 
-    if len(prefixes) < target_count:
+    if not prefixes:
         return [prefix]
 
     return prefixes
