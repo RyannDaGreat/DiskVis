@@ -42,6 +42,12 @@ python lod_census.py analyze census_output.census.zst
 
 Open [ryanndagreat.github.io/DiskVis](https://ryanndagreat.github.io/DiskVis) and drag your `.census.zst` file onto the page.
 
+You can also auto-load a file via URL parameter — useful for sharing or bookmarking scans:
+```
+http://localhost:8000/index.html?file=census_output.census.zst
+```
+The `?file=` path is fetched via the browser, so the file must be served over HTTP (e.g. `python -m http.server`). Relative paths work when the file is in the same directory as the page.
+
 ## CLI Reference
 
 ### scan_census.py

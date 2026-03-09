@@ -820,7 +820,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 safetensors: 'safetensors',                       // Safetensors
                 weights: 'weights',                               // Model weights
                 onnx: 'onnx',                                     // ONNX
-                pb: 'tensorflow', keras: 'tensorflow',            // TensorFlow
+                pb: 'tensorflow', keras: 'tensorflow', tfrecord: 'tensorflow', snapshot: 'tensorflow',  // TensorFlow
                 npy: 'numpy', npz: 'numpy',                       // NumPy
                 pkl: 'pickle', pickle: 'pickle',                  // Pickle
                 csv: 'csv', tsv: 'csv',                           // Tabular data
@@ -3827,8 +3827,9 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 ctx.lineWidth = Config.SELECTION.HIGHLIGHT_OUTLINE_WIDTH * scale;
                 ctx.strokeRect(boxCanvasX, boxCanvasY, boxCanvasW, boxCanvasH);
 
-                // Draw path label above the selection box
-                const path = treemapDrag.currentAncestor.path || treemapDrag.currentAncestor.name;
+                // Draw path + size label above the selection box
+                const path = (treemapDrag.currentAncestor.path || treemapDrag.currentAncestor.name)
+                    + '  —  ' + Format.bytes(treemapDrag.currentAncestor.size);
                 const fontSize = 12 * scale;
                 const labelPadding = 4 * scale;
                 const labelHeight = fontSize + labelPadding * 2;
@@ -4676,6 +4677,26 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         loading.addEventListener('dragover', e => { e.preventDefault(); loading.style.background = '#2a2a4e'; });
         loading.addEventListener('dragleave', () => { loading.style.background = ''; });
         loading.addEventListener('drop', handleFileDrop);
+
+        // Auto-load from ?file= URL parameter
+        const fileParam = new URLSearchParams(window.location.search).get('file');
+        if (fileParam) {
+            (async () => {
+                try {
+                    ProgressUI.show({ stages: ['read', 'parse', 'tree', 'icons', 'render'], showInfo: true });
+                    ProgressUI.setStage('read', 'active');
+                    ProgressUI.setProgress('Fetching file...', 0);
+                    ProgressUI.setInfo(fileParam);
+                    const resp = await fetch(fileParam);
+                    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+                    const blob = await resp.blob();
+                    const file = new File([blob], fileParam.split('/').pop(), { type: 'application/octet-stream' });
+                    await processFile(file);
+                } catch (err) {
+                    showFileError(`Failed to load "${fileParam}": ${err.message}`, err);
+                }
+            })();
+        }
 
     </script>
 </body>
