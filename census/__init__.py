@@ -61,44 +61,9 @@ def merge(folder: str, output: str) -> None:
     print(f"Saved: {output} ({compressed_size / 1e6:.2f} MB)")
 
 
-def detect(path: str) -> None:
-    """
-    Command. Detect if a path is on an AWS FSx for Lustre mount and show S3 backing info.
-
-    Prints each detection step so users can see what worked and what failed.
-
-    Args:
-        path (str): Path to check (e.g., /fsx, /fsx/manta).
-    """
-    import sys
-    from census.aws import detect_s3_backing_verbose
-
-    result = detect_s3_backing_verbose(path)
-
-    print(f"Path: {path}")
-    print(f"Is Lustre: {result['is_lustre']}")
-    if result['lustre_name']:
-        print(f"Lustre name: {result['lustre_name']}")
-    if result['fsx_id']:
-        print(f"FSx ID: {result['fsx_id']}")
-    print()
-
-    for step in result['steps']:
-        print(f"  {step}")
-
-    print()
-    if result['result']:
-        print(f"S3 URI: {result['result']}")
-    else:
-        print("S3 URI: not detected")
-        print()
-        print("If you know the S3 URI, use: scan-s3 s3://bucket/prefix", file=sys.stderr)
-
-
 CLI = {
     'scan': scan_local,
     'scan-s3': _scan_s3_lazy,
-    'detect': detect,
     'lod': lod,
     'load': load,
     'merge': merge,
