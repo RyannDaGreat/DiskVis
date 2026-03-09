@@ -12,6 +12,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import boto3
+from botocore.config import Config as BotoConfig
 
 from census.scan import (
     finalize_scan,
@@ -88,7 +89,11 @@ def discover_prefixes(client, bucket: str, prefix: str, target_count: int) -> li
     return prefixes
 
 
-def list_prefix(client, bucket: str, prefix: str) -> list:
+OBJECTS_PER_PROGRESS = 10_000  # Print progress every N objects within a prefix
+
+
+def list_prefix(client, bucket: str, prefix: str,
+                show_progress: bool = True) -> list:
     """
     Query. List all objects under a prefix, returning census entries.
 
@@ -96,16 +101,23 @@ def list_prefix(client, bucket: str, prefix: str) -> list:
         client: boto3 S3 client.
         bucket (str): S3 bucket name.
         prefix (str): S3 prefix to list.
+        show_progress (bool): Print per-page progress to stderr.
 
     Returns:
         list: Census entries as [0, size, key]. Inode is always 0 (no S3 equivalent).
     """
     paginator = client.get_paginator('list_objects_v2')
     entries = []
+    total_size = 0
 
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get('Contents', []):
             entries.append([0, obj['Size'], obj['Key']])
+            total_size += obj['Size']
+
+        if show_progress and len(entries) % OBJECTS_PER_PROGRESS < 1000:
+            print(f"    {prefix}: {len(entries):,} objects, {total_size / 1e9:.1f} GB...",
+                  file=sys.stderr, flush=True)
 
     return entries
 
@@ -139,7 +151,13 @@ def scan(
         str: The output file path.
     """
     bucket, prefix = parse_s3_uri(root)
-    client = boto3.client('s3')
+
+    # max_pool_connections must match or exceed workers to avoid blocking
+    boto_config = BotoConfig(
+        max_pool_connections=workers + 4,
+        retries={'max_attempts': 10, 'mode': 'adaptive'},
+    )
+    client = boto3.client('s3', config=boto_config)
 
     ckpt_dir, resume_point, checkpoint_num = init_checkpoints(
         root, checkpoint_dir, show_progress,
@@ -160,7 +178,8 @@ def scan(
     prefixes_completed = 0
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(list_prefix, client, bucket, p): p for p in prefixes}
+        futures = {pool.submit(list_prefix, client, bucket, p, show_progress): p
+                   for p in prefixes}
 
         for future in as_completed(futures):
             prefix_name = futures[future]
@@ -176,7 +195,9 @@ def scan(
             prefixes_completed += 1
 
             if show_progress:
-                print_progress(prefixes_completed, len(files), total_size)
+                print(f"  [{prefixes_completed}/{len(prefixes)}] {len(files):,} files, "
+                      f"{total_size / 1e9:.1f} GB (prefix: {prefix_name})",
+                      file=sys.stderr, flush=True)
 
             # Checkpoint based on accumulated entries
             if len(files) >= checkpoint_interval:
