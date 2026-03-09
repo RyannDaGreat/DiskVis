@@ -6,9 +6,9 @@ Reduces millions of files to a target count while preserving visual accuracy.
 Small files get aggregated into their parent folders.
 
 Usage:
-    python scan_census.py lod root.census.zst --target=500000
-    python scan_census.py lod root.census.zst --target=500000 --output=root.lod.census.zst
-    python scan_census.py analyze root.census.zst
+    python scan_census.py lod root.jsonl.zst --target=500000
+    python scan_census.py lod root.jsonl.zst --target=500000 --output=root.lod.jsonl.zst
+    python scan_census.py analyze root.jsonl.zst
 """
 from __future__ import annotations
 
@@ -238,7 +238,7 @@ def lod(
     3. Threshold is computed to hit target count
 
     Args:
-        input_path (str): Path to input .census.zst file.
+        input_path (str): Path to input .jsonl.zst file.
         target (int): Target number of entries. Default: 500000
         output (str): Output path. Default: input with .lod inserted.
         show_progress (bool): Print progress to stderr. Default: True
@@ -247,8 +247,8 @@ def lod(
         dict: Stats about the operation.
     """
     if output is None:
-        base = input_path.replace('.census.zst', '')
-        output = f"{base}.lod.census.zst"
+        base = input_path.replace('.jsonl.zst', '')
+        output = f"{base}.lod.jsonl.zst"
 
     if show_progress:
         print(f"Loading {input_path}...", file=sys.stderr)
@@ -328,7 +328,7 @@ def analyze(input_path: str) -> None:
     Command. Analyze census size distribution to help choose target count.
 
     Args:
-        input_path (str): Path to .census.zst file.
+        input_path (str): Path to .jsonl.zst file.
     """
     print(f"Loading {input_path}...", file=sys.stderr)
     data = load_census(input_path)

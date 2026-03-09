@@ -4,7 +4,7 @@ S3 scanner using ListObjectsV2 with parallel prefix fan-out.
 
 Usage:
     python scan_census.py scan-s3 s3://bucket/prefix
-    python scan_census.py scan-s3 s3://bucket/prefix --workers=16 --output=bucket.census.zst
+    python scan_census.py scan-s3 s3://bucket/prefix --workers=16 --output=bucket.jsonl.zst
 """
 from __future__ import annotations
 
@@ -128,7 +128,7 @@ def list_prefix(client, bucket: str, prefix: str,
 
 def scan(
     root: str,
-    output: str = 'census_output.census.zst',
+    output: str = 'census_output.jsonl.zst',
     checkpoint_dir: str = None,
     checkpoint_interval: int = 100_000,
     workers: int = 16,
@@ -141,7 +141,7 @@ def scan(
 
     Args:
         root (str): S3 URI like 's3://bucket/prefix'.
-        output (str): Output file path. Default: 'census_output.census.zst'
+        output (str): Output file path. Default: 'census_output.jsonl.zst'
         checkpoint_dir (str): Where to store checkpoints. Default: None (auto)
         checkpoint_interval (int): Entries between checkpoints. Default: 100000
         workers (int): Parallel listing threads. Default: 16

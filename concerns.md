@@ -33,8 +33,25 @@ Local scan (`scan_census.py scan /fsx --one_file_system=False`) reported zero fi
 - Lustre name → FSx ID via AWS API: UNTESTED (no fsx:DescribeFileSystems permission)
 - FSx ID → S3 URI via API: UNTESTED (no permissions)
 
+### S3 Scan Test (2026-03-09)
+- Tested scan-s3 on s3://netflix.pi.prod/manta/diffusion/
+- 590K+ objects scanned in ~2 minutes (~5,000 objects/sec single-threaded)
+- Progress printing fixed: prints every 10K objects within each prefix
+- boto3 Config fix: max_pool_connections must match workers (default 10 is too low)
+- Adaptive retry mode handles S3 throttling (503 SlowDown)
+- discover_prefixes returns 1 prefix for small trees → single-threaded listing. OK for now.
+
+### FSx S3 Bucket Discovery
+- /fsx → s3://netflix.pi.prod/ (confirmed by listing top-level prefixes matching /fsx/manta/)
+- /fsx_scanline → s3://nflx-studio-algo-research-sl-awsprod-us-east-1/nflx-scl-ml/
+- Discovery was manual (comparing directory listings). The AWS API approach failed because
+  FSx filesystems are in a different AWS account (cross-account sharing via VPC).
+- Auto-detection via AWS API (detect command) works for the local Lustre → mount name chain,
+  but cannot complete the FSx ID → S3 URI chain without proper IAM permissions.
+
 ### Architecture Decisions
 - Extracted shared code into `census/` package (io.py, scan.py, scan_local.py, scan_s3.py, lod.py)
 - This is a general-purpose public GitHub tool, NOT Netflix-specific
 - FSx auto-detection must work on standard EC2/EKS, gracefully degrade elsewhere
 - Cardinal rule added: never commit untested code, mark UNTESTED functions explicitly
+- Considering renaming .census.zst → .census (single extension, hide compression detail)

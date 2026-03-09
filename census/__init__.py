@@ -2,7 +2,7 @@
 Census: disk usage scanning and visualization tools.
 
 Submodules:
-    io          - Read/write .census.zst files
+    io          - Read/write .jsonl.zst files
     scan        - Shared checkpoint/progress infrastructure
     scan_local  - Local filesystem DFS scanner
     scan_s3     - S3 ListObjectsV2 parallel scanner
@@ -28,7 +28,7 @@ def load(path: str) -> None:
     Command. Load and print stats from a census file.
 
     Args:
-        path (str): Path to .census.zst file.
+        path (str): Path to .jsonl.zst file.
     """
     import sys
     print(f"Loading {path}...", file=sys.stderr)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Shared census file I/O: read, write, and merge .census.zst files.
+Shared census file I/O: read, write, and merge .jsonl.zst files.
 
 Census format: zstd-compressed JSONL.
     Line 1: header {"root": ..., "timestamp": ..., "count": ...}
@@ -20,7 +20,7 @@ import zstandard as zstd
 # =============================================================================
 
 ZSTD_LEVEL = 3
-CENSUS_EXT = '.census.zst'
+CENSUS_EXT = '.jsonl.zst'
 
 
 # =============================================================================
@@ -42,7 +42,7 @@ def save_census(path: str, files: list, root: str, timestamp: int) -> int:
 
     Examples:
         >>> import tempfile, os
-        >>> f = tempfile.NamedTemporaryFile(suffix='.census.zst', delete=False)
+        >>> f = tempfile.NamedTemporaryFile(suffix='.jsonl.zst', delete=False)
         >>> size = save_census(f.name, [[123, 456, '/a/b']], '/a', 1234567890)
         >>> size > 0
         True
@@ -63,14 +63,14 @@ def load_census(path: str) -> dict:
     Query (reads file). Load census from JSONL + zstd.
 
     Args:
-        path (str): Path to .census.zst file.
+        path (str): Path to .jsonl.zst file.
 
     Returns:
         dict: Census with keys 'root', 'timestamp', 'files'.
 
     Examples:
         >>> import tempfile, os
-        >>> f = tempfile.NamedTemporaryFile(suffix='.census.zst', delete=False)
+        >>> f = tempfile.NamedTemporaryFile(suffix='.jsonl.zst', delete=False)
         >>> _ = save_census(f.name, [[123, 456, '/a/b']], '/a', 1234567890)
         >>> data = load_census(f.name)
         >>> data['root']
@@ -101,8 +101,8 @@ def load_census_folder(folder: str) -> dict:
     Examples:
         >>> import tempfile, os
         >>> d = tempfile.mkdtemp()
-        >>> _ = save_census(f'{d}/checkpoint_000.census.zst', [[1, 100, '/a']], '/', 1000)
-        >>> _ = save_census(f'{d}/checkpoint_001.census.zst', [[2, 200, '/b']], '/', 2000)
+        >>> _ = save_census(f'{d}/checkpoint_000.jsonl.zst', [[1, 100, '/a']], '/', 1000)
+        >>> _ = save_census(f'{d}/checkpoint_001.jsonl.zst', [[2, 200, '/b']], '/', 2000)
         >>> data = load_census_folder(d)
         >>> len(data['files'])
         2

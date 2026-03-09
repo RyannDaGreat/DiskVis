@@ -4,7 +4,7 @@ Local filesystem scanner with DFS traversal and checkpointing.
 
 Usage:
     python scan_census.py scan /
-    python scan_census.py scan /Users --output=users.census.zst
+    python scan_census.py scan /Users --output=users.jsonl.zst
     python scan_census.py scan /mnt/nfs --checkpoint_interval=50000
 """
 from __future__ import annotations
@@ -57,7 +57,7 @@ def stat_entry(entry: os.DirEntry, follow_symlinks: bool, disk_usage: bool) -> t
 
 def scan(
     root: str = '/',
-    output: str = 'census_output.census.zst',
+    output: str = 'census_output.jsonl.zst',
     checkpoint_dir: str = None,
     checkpoint_interval: int = 100_000,
     one_file_system: bool = True,
@@ -73,7 +73,7 @@ def scan(
 
     Args:
         root (str): Directory to scan. Default: '/'
-        output (str): Output file path. Default: 'census_output.census.zst'
+        output (str): Output file path. Default: 'census_output.jsonl.zst'
         checkpoint_dir (str): Where to store checkpoints. Default: None (auto)
         checkpoint_interval (int): Dirs between checkpoints. Default: 100000
         one_file_system (bool): Stay on same mount. Default: True
