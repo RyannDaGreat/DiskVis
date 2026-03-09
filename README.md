@@ -30,20 +30,15 @@ python scan_census.py scan /home --output=home.jsonl.zst
 python scan_census.py scan-s3 s3://my-bucket/data/ --output=bucket.jsonl.zst --workers=16
 ```
 
+This produces two files:
+- `census_output.jsonl.zst` — full census (every file)
+- `census_output.lod.jsonl.zst` — reduced version for fast browser loading
+
 Scans are resumable: if interrupted, re-run and it picks up where it left off.
 
-**3. (Optional) Reduce for large scans**
+Use `--no_lod` to skip LOD generation, or `--lod_target=250000` to customize the entry count.
 
-Scans with millions of files can produce large census files. Use LOD to aggregate small files into folder entries:
-```bash
-python scan_census.py lod scan.jsonl.zst --target=500000
-```
-This creates `scan.lod.jsonl.zst`. To find a good target:
-```bash
-python scan_census.py analyze scan.jsonl.zst
-```
-
-**4. View in browser**
+**3. View in browser**
 
 Open [ryanndagreat.github.io/DiskVis](https://ryanndagreat.github.io/DiskVis) and drag your `.jsonl.zst` file onto the page.
 
@@ -57,6 +52,9 @@ Scanning /home/alice...
   2,000 dirs, 31,205 files, 24.1 GB...
 Done: 45,000 files, 52.30 GB
 Saved: alice.jsonl.zst (0.42 MB)
+
+Generating LOD (500,000 target)...
+Saved: alice.lod.jsonl.zst (0.38 MB)
 ```
 
 ### Scan an S3 bucket
@@ -66,25 +64,28 @@ Scanning s3://my-data-lake/datasets/ with 16 workers...
 Discovering prefixes...
 Found 24 prefixes to scan
     datasets/images/: 10,000 objects, 45.2 GB...
-    datasets/images/: 20,000 objects, 91.0 GB...
   [1/24] 128,400 files, 512.3 GB (prefix: datasets/images/)
   [2/24] 245,100 files, 1024.7 GB (prefix: datasets/video/)
   ...
 Done: 3,860,000 files, 1098860.34 GB
 Saved: census_output.jsonl.zst (33.06 MB)
+
+Generating LOD (500,000 target)...
+Saved: census_output.lod.jsonl.zst (4.31 MB)
 ```
 
 S3 scanning uses `ListObjectsV2` with parallel prefix fan-out — orders of magnitude faster than scanning a FUSE mount.
 
-### Reduce with LOD
+### Skip LOD or customize target
 ```bash
-$ python scan_census.py lod census_output.jsonl.zst --target=500000
-Loaded 3,859,985 files
-Size threshold: 690,693,439 bytes (674505.3 KB)
-Large files (kept): 400,001
-Small files aggregated into 100,000 folders
-Size coverage: 100.0%
-Saved: census_output.lod.jsonl.zst (4.31 MB)
+# Skip LOD generation
+python scan_census.py scan /home --no_lod
+
+# Custom LOD target (fewer entries = smaller file)
+python scan_census.py scan /home --lod_target=250000
+
+# Run LOD separately on an existing census
+python scan_census.py lod census_output.jsonl.zst --target=100000
 ```
 
 ### Inspect a census file
@@ -119,15 +120,18 @@ For FSx for Lustre, scanning the backing S3 bucket directly is much faster becau
 | `load <file>` | Print stats from a census file |
 | `merge <folder> --output=FILE` | Merge checkpoint folder into single file |
 
-### Flags for `scan` (local)
-- `--checkpoint_interval=100000` — directories between checkpoint saves
+### Common flags (both `scan` and `scan-s3`)
+- `--no_lod` — skip automatic LOD generation
+- `--lod_target=500000` — LOD entry count (default 500K)
+- `--checkpoint_interval=100000` — entries between checkpoint saves
+
+### Extra flags for `scan` (local)
 - `--one_file_system=True` — don't cross mount points
 - `--disk_usage=True` — actual disk usage (False = apparent file size)
 - `--report_errors` — print permission/access errors
 
-### Flags for `scan-s3`
+### Extra flags for `scan-s3`
 - `--workers=16` — parallel listing threads
-- `--checkpoint_interval=100000` — objects between checkpoint saves
 
 ## Census Format
 
