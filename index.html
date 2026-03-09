@@ -310,7 +310,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
     </div>
     <div id="tooltip" class="glass glass-panel"></div>
     <div id="loading" class="glass glass-panel">
-        <div class="drop-text">Drop .json.zst file here</div>
+        <div class="drop-text">Drop .jsonl.zst file here</div>
         <div class="progress-section">
             <div class="stages" id="stagesContainer"></div>
             <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
@@ -1329,11 +1329,18 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                 }
 
                 // Build tree only up to opaque directory (or full path if none)
-                const buildDepth = opaqueDepth >= 0 ? opaqueDepth + 1 : parts.length;
+                let buildDepth = opaqueDepth >= 0 ? opaqueDepth + 1 : parts.length;
 
                 for (let j = 0; j < buildDepth; j++) {
                     const part = parts[j];
                     const isLeaf = j === parts.length - 1 || j === opaqueDepth;
+
+                    // Parent was already marked opaque — absorb size and stop
+                    if (!current.children) {
+                        current.size += size;
+                        buildDepth = j;  // truncate so size propagation loop matches
+                        break;
+                    }
 
                     if (!current.children[part]) {
                         current.children[part] = {
@@ -4562,14 +4569,17 @@ MANDATORY STANDARDS - All contributors must follow these rules.
 
             const byInode = new Map();
             let lastPath = '';
+            let nextSyntheticInode = -1;
             for (let i = 1; i < lines.length; i++) {
                 if (!lines[i]) continue;
                 const f = JSON.parse(lines[i]);
                 const fileObj = { inode: f[0], size: f[1], path: f[2] };
                 lastPath = fileObj.path;
-                const existing = byInode.get(fileObj.inode);
+                // inode 0 means no real inode (e.g. S3/cloud) — skip dedup
+                const key = fileObj.inode === 0 ? nextSyntheticInode-- : fileObj.inode;
+                const existing = byInode.get(key);
                 if (!existing || fileObj.path.length < existing.path.length) {
-                    byInode.set(fileObj.inode, fileObj);
+                    byInode.set(key, fileObj);
                 }
                 if (Progress.shouldYield(lastYield)) {
                     const pct = Progress.calcStep(i, totalFiles);
@@ -4633,7 +4643,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
                     <div style="font-size: 16px; margin-bottom: 10px;">Error</div>
                     <div style="font-size: 13px;">${message}</div>
                     <div style="margin-top: 15px; font-size: 12px; color: var(--text-dim);">
-                        Drop another .json.zst file to try again
+                        Drop another .jsonl.zst file to try again
                     </div>
                 </div>
                 <input type="file" id="fileInput" accept=".zst">
