@@ -217,7 +217,36 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             opacity: 0;
             cursor: pointer;
         }
-        #loading .drop-text { text-align: center; font-size: 16px; }
+        #loading .drop-text {
+            text-align: center;
+            font-size: 16px;
+        }
+        #loading .drop-prompt {
+            font-size: 16px;
+        }
+        #loading .drop-error {
+            display: none;
+            margin-top: 12px;
+        }
+        #loading.error .drop-prompt {
+            display: none;
+        }
+        #loading.error .drop-error {
+            display: block;
+        }
+        #loading .drop-error-title {
+            color: #ff6b6b;
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+        #loading .drop-error-message {
+            font-size: 13px;
+        }
+        #loading .drop-error-hint {
+            margin-top: 15px;
+            font-size: 12px;
+            color: var(--text-dim);
+        }
         #loading .progress-section { display: none; }
         #loading.processing .drop-text { display: none; }
         #loading.processing .progress-section { display: block; }
@@ -310,7 +339,14 @@ MANDATORY STANDARDS - All contributors must follow these rules.
     </div>
     <div id="tooltip" class="glass glass-panel"></div>
     <div id="loading" class="glass glass-panel">
-        <div class="drop-text">Drop .jsonl.zst file here</div>
+        <div class="drop-text">
+            <div class="drop-prompt">Drop .jsonl.zst file here</div>
+            <div class="drop-error" aria-live="polite">
+                <div class="drop-error-title">Error</div>
+                <div class="drop-error-message" id="dropErrorMessage"></div>
+                <div class="drop-error-hint">Drop another .jsonl.zst file to try again</div>
+            </div>
+        </div>
         <div class="progress-section">
             <div class="stages" id="stagesContainer"></div>
             <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
@@ -4373,6 +4409,12 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         // Load JSON+zstd from file picker
         const loading = document.getElementById('loading');
         const fileInput = document.getElementById('fileInput');
+        const dropErrorMessage = document.getElementById('dropErrorMessage');
+
+        function resetLoadingState() {
+            loading.classList.remove('error');
+            if (dropErrorMessage) dropErrorMessage.textContent = '';
+        }
 
         /**
          * Progress - Pure functions for progress bar calculations.
@@ -4511,9 +4553,8 @@ MANDATORY STANDARDS - All contributors must follow these rules.
             /** Hide progress UI with fade-out transition */
             hide() {
                 clearTimeout(this.showTimeout);
-                if (this.isVisible) {
-                    loading.classList.add('hidden');
-                }
+                loading.classList.add('hidden');
+                loading.classList.remove('processing', 'error');
                 this.isVisible = false;
             },
 
@@ -4544,6 +4585,7 @@ MANDATORY STANDARDS - All contributors must follow these rules.
          * ============================================================ */
 
         async function processFile(file) {
+            resetLoadingState();
             Viewport.apply(Viewport.defaults());
             ProgressUI.show({ stages: ['read', 'parse', 'tree', 'icons', 'render'], showInfo: true });
             let lastYield = performance.now();
@@ -4638,25 +4680,19 @@ MANDATORY STANDARDS - All contributors must follow these rules.
         function showFileError(message, err) {
             console.error('File processing error:', err);
             ProgressUI.hide();
+            resetLoadingState();
+            loading.style.background = '';
             loading.classList.remove('hidden', 'processing');
-            loading.innerHTML = `
-                <div style="color: #ff6b6b; text-align: center;">
-                    <div style="font-size: 16px; margin-bottom: 10px;">Error</div>
-                    <div style="font-size: 13px;">${message}</div>
-                    <div style="margin-top: 15px; font-size: 12px; color: var(--text-dim);">
-                        Drop another .jsonl.zst file to try again
-                    </div>
-                </div>
-                <input type="file" id="fileInput" accept=".zst">
-            `;
-            // Re-attach file input listener
-            document.getElementById('fileInput').addEventListener('change', handleFileChange);
+            loading.classList.add('error');
+            if (dropErrorMessage) dropErrorMessage.textContent = message;
         }
 
         async function handleFileChange(e) {
-            if (!e.target.files[0]) return;
+            const file = e.target.files[0];
+            e.target.value = '';
+            if (!file) return;
             try {
-                await processFile(e.target.files[0]);
+                await processFile(file);
             } catch (err) {
                 showFileError(`Failed to process file: ${err.message}`, err);
             }
